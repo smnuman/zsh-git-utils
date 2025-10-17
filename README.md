@@ -125,3 +125,33 @@ export GIT_PROVIDER="github"
 export GITHUB_USER="username"
 export GITLAB_USER="username"
 ```
+
+2. **Initialize repo**
+```zsh
+grepo "Initial commit"
+```
+
+3. **Auto-setup encryption (if sensitive files):**
+```zsh
+gencrypt_setup . true
+```
+4. **Add submodules:**
+```zsh
+gsub folder "Add submodule"
+gsub-all "Add all submodules"
+```
+5. **Sync parent and submodules:**
+```zsh
+gsync
+gsync-all "Update all submodules"
+```
+6. **Scan for secrets**
+```zsh
+gsecrets
+gshook .
+```
+7. **Maintain .gitignore and .gsubignore:**
+```zsh
+git-genignore
+gsub-genignore
+```
