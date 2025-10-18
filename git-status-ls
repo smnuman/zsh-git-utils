@@ -1,0 +1,66 @@
+#!/bin/bash
+# git-status-ls: List files in the git repository along with their status
+# Taken from: https://stackoverflow.com/a/8728242/2378780 & modified
+# Usage: git-status-ls
+# It maps Git’s short two-letter status codes into human-readable explanations.
+# -------------------------------------------------------------------------
+# Future upgrades:
+#   - [ ] JSON output mode (--json)
+#   - [ ] Sorting options (--sort=status|name)
+# -------------------------------------------------------------------------
+
+# Prefer porcelain v1 for now (v2 -z parsing planned later)
+git status --porcelain | \
+awk '
+BEGIN {
+    FS = " "
+    # ANSI colours
+    green  = sprintf("\033[0;32m")
+    red    = sprintf("\033[0;31m")
+    yellow = sprintf("\033[0;33m")
+    blue   = sprintf("\033[0;34m")
+    reset  = sprintf("\033[0m")
+}
+{
+    xstat = substr($0, 1, 1)
+    ystat = substr($0, 2, 1)
+    f = substr($0, 4)
+
+    # Handle renamed files (show old -> new)
+    ri = index(f, " -> ")
+    if (ri > 0) {
+        old = substr(f, 1, ri - 1)
+        new = substr(f, ri + 4)
+        f = old " → " new
+    }
+
+    # Determine status
+    if (xstat == " " && ystat ~ "M|D") stat = "not updated"
+    else if (xstat == "M" && ystat ~ " |M|D") stat = "updated in index"
+    else if (xstat == "A" && ystat ~ " |M|D") stat = "added to index"
+    else if (xstat == "D" && ystat ~ " |M") stat = "deleted from index"
+    else if (xstat == "R" && ystat ~ " |M|D") stat = "renamed in index"
+    else if (xstat == "C" && ystat ~ " |M|D") stat = "copied in index"
+    else if (xstat ~ "M|A|R|C" && ystat == " ") stat = "index and work tree match"
+    else if (xstat ~ " |M|A|R|C" && ystat == "M") stat = "work tree changed since index"
+    else if (xstat ~ " |M|A|R|C" && ystat == "D") stat = "deleted in work tree"
+    else if (xstat == "D" && ystat == "D") stat = "unmerged, both deleted"
+    else if (xstat == "A" && ystat == "U") stat = "unmerged, added by us"
+    else if (xstat == "U" && ystat == "D") stat = "unmerged, deleted by them"
+    else if (xstat == "U" && ystat == "A") stat = "unmerged, added by them"
+    else if (xstat == "D" && ystat == "U") stat = "unmerged, deleted by us"
+    else if (xstat == "A" && ystat == "A") stat = "unmerged, both added"
+    else if (xstat == "U" && ystat == "U") stat = "unmerged, both modified"
+    else if (xstat == "?" && ystat == "?") stat = "untracked"
+    else if (xstat == "!" && ystat == "!") stat = "ignored"
+    else stat = "unknown status"
+
+    # Choose colour based on state
+    if (stat ~ /untracked|ignored/) color = yellow
+    else if (stat ~ /deleted|unmerged/) color = red
+    else if (stat ~ /added|updated|renamed|copied/) color = green
+    else color = blue
+
+    printf "%s%s%s\t \t%s\n", color, f, reset, stat
+}' | \
+    column -t -s $'\t'

@@ -91,7 +91,7 @@ The workflow proceeds in **layers**, reflecting how functions depend on each oth
 | Function | Usage | Description |
 |----------|-------|-------------|
 | `gsub <folder> [commit_msg] [repo_name]` | `gsub ~/Projects/foo "Add submodule"` | Adds folder as submodule, commits, pushes, handles remote creation |
-| `gsub-all [-L N|--level=N] [--debug] <commit_msg>` | `gsub-all "Add all submodules"` | Recursively processes folders to add as submodules |
+| `gsub-all [-L N\|--level=N] [--debug] <commit_msg>` | `gsub-all "Add all submodules"` | Recursively processes folders to add as submodules |
 | `gunsub <submodule>` | `gunsub foo` | Safely removes a submodule and cleans `.git/modules` |
 | `gsync-push` | `gsync-push "Sync commit"` | Pushes submodule + parent |
 | `gsync-pull` | `gsync-pull` | Pulls latest changes for submodule + parent |
