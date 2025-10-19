@@ -6,9 +6,11 @@
 # 🔧 CORE HELPER FUNCTIONS - Provider-agnostic utilities
 # =============================================================================
 
+# Internal utility e.g.: _gituser → returns active git username
+
 # 🏷️  Generate standardized repository name from directory or custom input
-# Usage: grepo_name [dir] [custom_name]
-grepo_name() {
+# Usage: _grepo_name [dir] [custom_name]
+_grepo_name() {
     local dir="${1:-$PWD}" custom="$2"
 
     # Return validated custom name if provided
@@ -29,8 +31,8 @@ grepo_name() {
 }
 
 # 🌐 Get Git provider (github/gitlab) from GIT_PROVIDER env var
-# Usage: githost
-githost() {
+# Usage: _githost
+_githost() {
     local provider="${GIT_PROVIDER:-github}"
     provider="${provider:l}"
     case "$provider" in
@@ -40,10 +42,10 @@ githost() {
 }
 
 # 🔗 Generate SSH remote URL for provider
-# Usage: gurl <username> <repo_name> [provider]
-gurl() {
-    local user="$1" repo="$2" provider="${3:-$(githost)}"
-    [[ -z "$user" || -z "$repo" ]] && { zshlog --error "gurl requires [username] and [repo_name]"; return 1; }
+# Usage: _gurl <username> <repo_name> [provider]
+_gurl() {
+    local user="$1" repo="$2" provider="${3:-$(_githost)}"
+    [[ -z "$user" || -z "$repo" ]] && { zshlog --error "_gurl requires [username] and [repo_name]"; return 1; }
     case "$provider" in
         github) echo "git@github.com:${user}/${repo}.git" ;;
         gitlab) echo "git@gitlab.com:${user}/${repo}.git" ;;
@@ -52,9 +54,9 @@ gurl() {
 }
 
 # 🛠️  Get CLI command for provider (gh/glab)
-# Usage: gitcli <command> [provider]
-gitcli() {
-    local cmd="$1" provider="${2:-$(githost)}"
+# Usage: _gitcli <command> [provider]
+_gitcli() {
+    local cmd="$1" provider="${2:-$(_githost)}"
     case "$provider" in
         github) echo "gh $cmd" ;;
         gitlab) echo "glab $cmd" ;;
@@ -63,9 +65,9 @@ gitcli() {
 }
 
 # 👤 Get username from GITHUB_USER/GITLAB_USER env var
-# Usage: gituser [provider]
-gituser() {
-    local provider="${1:-$(githost)}"
+# Usage: _gituser [provider]
+_gituser() {
+    local provider="${1:-$(_githost)}"
     case "$provider" in
         github)
             [[ -n "$GITHUB_USER" ]] && { echo "$GITHUB_USER"; return 0; }
@@ -85,7 +87,7 @@ gituser() {
 # =============================================================================
 
 # 🔐 Detect if directory contains sensitive files
-gsensitive() {
+_gsensitive() {
     local dir="${1:-$PWD}"
     local sensitive_patterns=(
         "*.env"
@@ -117,128 +119,253 @@ gsensitive() {
     return 1  # No sensitive files found
 }
 
-# 🔐 Setup git-crypt with default sensitive file patterns
-gencrypt_setup() {
-    local dir="${1:-$PWD}"
-    local auto="${2:-true}"
+gitcrypt() {
+    [[ "$1" == (-h|--help) || -z "$1" ]] && {
+        echo "\n🔐 Usage: gitcrypt [-f] <path1> [path2 ...]"
+        echo "Adds files or folders to the .gitcrypt manifest for encryption."
+        echo "  -f    Treat each argument as a folder (adds /** recursively)"
+        echo "\nExample:"
+        echo "  gitcrypt secrets.env keys.pem"
+        echo "  gitcrypt -f nomad vault\n"
+        return 0
+    }
 
+    local folder_mode=false;  [[ "$1" == "-f" ]] && { folder_mode=true; shift; }
+
+    [[ $# -eq 0 ]] && { zshlog --error "No paths given"; return 1; }
+    [[ ! -f .gitcrypt ]] && touch .gitcrypt
+
+    if [[ "$folder_mode" == true ]]; then
+        for item in "$@"; do
+            local pattern="**/${(q)item}/**"
+            echo "$pattern" >> .gitcrypt
+            zshlog --info "Added folder pattern '$pattern' to .gitcrypt"
+        done
+    else
+        for item in "$@"; do
+            local pattern="${(q)item}"
+            echo "$pattern" >> .gitcrypt
+            zshlog --info "Added file '$pattern' to .gitcrypt"
+        done
+    fi
+
+    echo "" >> .gitcrypt
+    sort -u .gitcrypt -o .gitcrypt
+    zshlog --info "✅ .gitcrypt updated (deduplicated)" ; cat .gitcrypt
+}
+
+# 🔐 Setup git-crypt with default sensitive file patterns
+# gencrypt_setup() {
+#     # local dir="${1:-$PWD}"
+#     # local auto="${2:-true}"
+
+#     # (
+#     #     cd "$dir" || return 1
+
+#     #     # Check if git-crypt is installed
+#     #     ! command -v git-crypt &>/dev/null && { zshlog --warn -v "git-crypt not installed. Skipping encryption setup."; zshlog --info "Install via: brew install git-crypt"; return 1; }
+
+#     #     # Check if already initialized
+#     #     [[ -f .git/git-crypt/keys/default ]] && { zshlog --info "git-crypt already initialized in ${dir/#$HOME/~}"; return 0; }
+
+#     #     # Auto mode: only setup if sensitive files detected
+#     #     [[ "$auto" == "true" ]] && { ! _gsensitive "$dir" && { zshlog --info "No sensitive files detected. Skipping encryption."; return 0; }; zshlog --info -v "🔐 Sensitive files detected! Setting up encryption automatically..."; } || zshlog --info -v "🔐 Setting up git-crypt encryption..."
+
+#     #     # Initialize git-crypt
+#     #     git-crypt init && zshlog --info -v "Folder $dir encryption initialised" || {
+#     #         zshlog --error -v "Failed to initialize git-crypt"
+#     #         return 1
+#     #     }
+
+#     #     # Default sensitive file patterns
+#     #     local default_patterns=(
+#     #         "**/*.env"
+#     #         "**/*.key"
+#     #         "**/*.pem"
+#     #         "**/*.p12"
+#     #         "**/*.pfx"
+#     #         "**/*secret*"
+#     #         "**/*credential*"
+#     #         "**/*password*"
+#     #         "**/*.token"
+#     #         "**/.ssh/id_*"
+#     #         "**/.ssh/*_rsa"
+#     #         "**/.gnupg/*.key"
+#     #         "**/secrets/"
+#     #         "**/credentials/"
+#     #     )
+
+#     #     # Load custom patterns from .gitcrypt if exists
+#     #     local custom_patterns=()
+#     #     if [[ -f .gitcrypt ]]; then
+#     #         zshlog --info -v "📋 Loading custom encryption patterns from .gitcrypt..."
+#     #         while IFS= read -r line; do
+#     #             # Skip comments and empty lines
+#     #             line="${line%%\#*}"  # Remove comments
+#     #             line="${line#"${line%%[![:space:]]*}"}"  # Trim leading whitespace
+#     #             line="${line%"${line##*[![:space:]]}"}"  # Trim trailing whitespace
+#     #             [[ -z "$line" ]] && continue
+#     #             custom_patterns+=("$line")
+#     #             zshlog --info -v "Added custom pattern from .gitcrypt: $line"
+#     #         done < .gitcrypt
+#     #     fi
+
+#     #     # Combine all patterns
+#     #     local all_patterns=("${default_patterns[@]}" "${custom_patterns[@]}")
+
+#     #     # Create or update .gitattributes
+#     #     if [[ ! -f .gitattributes ]]; then
+#     #         echo "# git-crypt encryption patterns" > .gitattributes
+#     #         zshlog --info "Created .gitattributes file"
+#     #     else
+#     #         # Backup existing
+#     #         cp .gitattributes .gitattributes.backup
+#     #         zshlog --info "Backed up existing .gitattributes"
+#     #         if ! grep -q "git-crypt" .gitattributes; then
+#     #             echo "" >> .gitattributes
+#     #             echo "# git-crypt encryption patterns" >> .gitattributes
+#     #         fi
+#     #     fi
+
+#     #     # Add all patterns (default + custom from .gitcrypt)
+#     #     local added_count=0
+#     #     for pattern in "${all_patterns[@]}"; do
+#     #         if ! grep -q "^${pattern}" .gitattributes; then
+#     #             echo "${pattern} filter=git-crypt diff=git-crypt" >> .gitattributes
+#     #             ((added_count++))
+#     #         fi
+#     #     done
+
+#     #     local custom_count=${#custom_patterns[@]}
+#     #     [[ $custom_count -gt 0 ]] && zshlog --info -v "✅ git-crypt initialized with ${added_count} patterns (${custom_count} from .gitcrypt)" || zshlog --info -v "✅ git-crypt initialized with ${added_count} default patterns"
+
+#     #     # Add .gitattributes to git
+#     #     git add .gitattributes
+#     #     zshlog --info "Added .gitattributes to git staging"
+
+#     #     zshlog --info -v "✅ Encryption setup complete!"
+#     #     zshlog --info "Encrypted files are transparent locally, but encrypted on GitHub."
+#     #     [[ $custom_count -gt 0 ]] && zshlog --info -v "ℹ️  Custom patterns loaded from .gitcrypt"
+
+#     #     # Auto-install pre-commit hook (non-interactive)
+#     #     gshook "$dir" 2>/dev/null || {
+#     #         zshlog --warn "Pre-commit hook installation skipped"
+#     #     }
+#     # )
+# }
+
+# 🔐 git-crypt setup (smart + force-capable + concise)
+# Usage: gencrypt_setup [dir=. ] [auto=true] [force=false]
+gencrypt_setup() {
+    [[ "$1" == (-h|--help) || -z "$1" ]] && {
+        echo "\n🔐  Usage: gencrypt_setup [dir=. ] [auto=true] [force=false]\n"
+        echo "Examples:"
+        echo "  gencrypt_setup .             # Auto-detect sensitive files & setup git-crypt"
+        echo "  gencrypt_setup . false       # Skip detection, setup encryption anyway"
+        echo "  gencrypt_setup . true true   # Force full reinitialisation"
+        echo "\nNotes:"
+        echo "  - Works inside Git repos only"
+        echo "  - Backs up .gitattributes before modifying"
+        echo "  - Loads extra patterns from .gitcrypt (if exists)"
+        echo "  - Installs pre-commit secret scan hook automatically"
+        return 0
+    }
+
+    local dir="${1:-$PWD}" auto="${2:-true}" force="${3:-false}"
     (
         cd "$dir" || return 1
+        # Check if in git repo and git-crypt installed
+        git rev-parse --is-inside-work-tree &>/dev/null || { zshlog --error "Not a git repo or not in one: ${dir/#$HOME/~}"; return 1; }
+        command -v git-crypt &>/dev/null || { zshlog --warn "git-crypt not installed. Run: brew install git-crypt"; return 1; }
 
-        # Check if git-crypt is installed
-        ! command -v git-crypt &>/dev/null && { zshlog --warn -v "git-crypt not installed. Skipping encryption setup."; zshlog --info "Install via: brew install git-crypt"; return 1; }
+        # 💣 Force re-init mode
+        if [[ "$force" == "true" ]]; then
+            zshlog --warn "⚠️  Force mode enabled — removing existing git-crypt data"
+            rm -rf .git/git-crypt .gitattributes.backup 2>/dev/null
+            git rm --cached .gitattributes 2>/dev/null || true
+            git-crypt init && zshlog --info "✅ git-crypt reinitialised (force)" || { zshlog --error "Failed to reinitialise"; return 1; }
+        else
+            # Normal mode: skip if already initialized otherwise initialize if not fails
+            git-crypt status &>/dev/null && zshlog --info "Detected git-crypt setup, skipping init" || {
+                git-crypt init && zshlog --info "✅ git-crypt initialised" || {
+                    zshlog --error "Failed to init"; return 1;
+                };
+            }
+        fi
 
-        # Check if already initialized
-        [[ -f .git/git-crypt/keys/default ]] && { zshlog --info "git-crypt already initialized in ${dir/#$HOME/~}"; return 0; }
+        [[ "$auto" == "true" ]] && { _gsensitive "$dir" && zshlog --info "Sensitive files found, updating patterns..." || zshlog --info "No sensitive files found, updating anyway."; }
 
-        # Auto mode: only setup if sensitive files detected
-        [[ "$auto" == "true" ]] && { ! gsensitive "$dir" && { zshlog --info "No sensitive files detected. Skipping encryption."; return 0; }; zshlog --info -v "🔐 Sensitive files detected! Setting up encryption automatically..."; } || zshlog --info -v "🔐 Setting up git-crypt encryption..."
-
-        # Initialize git-crypt
-        git-crypt init || {
-            zshlog --error -v "Failed to initialize git-crypt"
-            return 1
-        }
-
-        # Default sensitive file patterns
+        # Default patterns
         local default_patterns=(
-            "*.env"
-            "*.key"
-            "*.pem"
-            "*.p12"
-            "*.pfx"
-            "*secret*"
-            "*credential*"
-            "*password*"
-            "*.token"
-            ".ssh/id_*"
-            ".ssh/*_rsa"
-            ".gnupg/*.key"
-            "secrets/"
-            "credentials/"
+            "**/*.env"
+            "**/*.key"
+            "**/*.pem"
+            "**/*.p12"
+            "**/*.pfx"
+            "**/*secret*"
+            "**/*credential*"
+            "**/*password*"
+            "**/*.token"
+            "**/.ssh/id_*"
+            "**/.ssh/*_rsa"
+            "**/.gnupg/*.key"
+            "**/secrets/"
+            "**/credentials/"
         )
 
-        # Load custom patterns from .gitkeys if exists
+        # Load custom patterns from .gitcrypt
         local custom_patterns=()
-        if [[ -f .gitkeys ]]; then
-            zshlog --info -v "📋 Loading custom encryption patterns from .gitkeys..."
-            while IFS= read -r line; do
-                # Skip comments and empty lines
-                line="${line%%\#*}"  # Remove comments
-                line="${line#"${line%%[![:space:]]*}"}"  # Trim leading whitespace
-                line="${line%"${line##*[![:space:]]}"}"  # Trim trailing whitespace
-                [[ -z "$line" ]] && continue
-                custom_patterns+=("$line")
-                zshlog --info "Added custom pattern from .gitkeys: $line"
-            done < .gitkeys
-        fi
+        [[ -f .gitcrypt ]] && while IFS= read -r line; do
+            line="${line%%\#*}"; line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"   # previously done!
+            [[ -n "$line" ]] && custom_patterns+=("$line")
+        done < .gitcrypt
 
-        # Combine all patterns
         local all_patterns=("${default_patterns[@]}" "${custom_patterns[@]}")
 
-        # Create or update .gitattributes
-        if [[ ! -f .gitattributes ]]; then
-            echo "# git-crypt encryption patterns" > .gitattributes
-            zshlog --info "Created .gitattributes file"
-        else
-            # Backup existing
-            cp .gitattributes .gitattributes.backup
-            zshlog --info "Backed up existing .gitattributes"
-            if ! grep -q "git-crypt" .gitattributes; then
-                echo "" >> .gitattributes
-                echo "# git-crypt encryption patterns" >> .gitattributes
-            fi
-        fi
+        # Backup or create .gitattributes
+        [[ -f .gitattributes ]] && { cp .gitattributes .gitattributes.backup && zshlog --info "Backed up existing .gitattributes"; } || { echo "# git-crypt encryption patterns" > .gitattributes && zshlog --info "Created .gitattributes"; }
 
-        # Add all patterns (default + custom from .gitkeys)
-        local added_count=0
-        for pattern in "${all_patterns[@]}"; do
-            if ! grep -q "^${pattern}" .gitattributes; then
-                echo "${pattern} filter=git-crypt diff=git-crypt" >> .gitattributes
-                ((added_count++))
-            fi
-        done
+        # Add missing patterns
+        local added=0; for p in "${all_patterns[@]}"; do grep -qxF "$p filter=git-crypt diff=git-crypt" .gitattributes || { echo "$p filter=git-crypt diff=git-crypt" >> .gitattributes; ((added++)); }; done
+        zshlog --info "✅ Added $added patterns to .gitattributes"
 
-        local custom_count=${#custom_patterns[@]}
-        [[ $custom_count -gt 0 ]] && zshlog --info -v "✅ git-crypt initialized with ${added_count} patterns (${custom_count} from .gitkeys)" || zshlog --info -v "✅ git-crypt initialized with ${added_count} default patterns"
+        # Stage .gitattributes for commit
+        git add .gitattributes && zshlog --info "Staged .gitattributes"
 
-        # Add .gitattributes to git
-        git add .gitattributes
-        zshlog --info "Added .gitattributes to git staging"
+        # Attempt pre-commit hook installation
+        gshook "$dir" 2>/dev/null || zshlog --warn "Skipped hook install"
 
-        zshlog --info -v "✅ Encryption setup complete!"
-        zshlog --info "Encrypted files are transparent locally, but encrypted on GitHub."
-        [[ $custom_count -gt 0 ]] && zshlog --info -v "ℹ️  Custom patterns loaded from .gitkeys"
-
-        # Auto-install pre-commit hook (non-interactive)
-        gshook "$dir" 2>/dev/null || {
-            zshlog --warn "Pre-commit hook installation skipped"
-        }
+        zshlog --info "✅ git-crypt setup complete${force:+ (forced)}"
     )
 }
 
 # 🔐 Check if a file would be encrypted
 gencrypt_check() {
-    local file="$1"
-    [[ -z "$file" ]] && { echo "Usage: gencrypt_check <file>"; return 1; }
-
-    ! command -v git-crypt &>/dev/null && { zshlog --error -v "git-crypt not installed"; return 1; }
-
-    [[ ! -f .git/git-crypt/keys/default ]] && { zshlog --error -v "git-crypt not initialized in this repo"; return 1; }
-
-    git-crypt status "$file" 2>/dev/null && {
-        zshlog --info -v "File: $file - Encrypted ✓"
-    } || {
-        zshlog --warn -v "File: $file - Not encrypted"
-        return 1
+    [[ "$1" == (-h|--help) || -z "$1" ]] && {
+        echo "\n🧩 Usage: gencrypt_check <file>\n"
+        echo "Checks whether a file is encrypted under git-crypt."
+        echo "Example:  gencrypt_check secrets.env\n"
+        return 0
     }
+    local file="$1"
+    ! command -v git-crypt &>/dev/null && { zshlog --error -v "git-crypt not installed"; return 1; }
+    [[ ! -f .git/git-crypt/keys/default ]] && { zshlog --error -v "git-crypt not initialised in this repo"; return 1; }
+    git-crypt status "$file" &>/dev/null && zshlog --info -v "File: $file - Encrypted ✓" || { zshlog --warn -v "File: $file - Not encrypted"; return 1; }
 }
 
 # 🔐 Scan for potential secrets in unencrypted files
 gsecrets() {
-    local dir="${1:-$PWD}"
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n🔍 Usage: gsecrets [dir=.]\n"
+        echo "Scans repository for potential secrets or credentials.\n"
+        echo "Examples:"
+        echo "  gsecrets .             # Scan current repo"
+        echo "  gsecrets ~/project     # Scan specific path\n"
+        return 0
+    }
 
-    zshlog --info -v "🔍 Scanning for potential secrets..."
+    local dir="${1:-$PWD}"
+    zshlog --info -v "🔍 Scanning for potential secrets in ${dir/#$HOME/~}..."
 
     local secret_patterns=(
         "password.*=.*"
@@ -267,6 +394,13 @@ gsecrets() {
 
 # 🔐 Install pre-commit hook for secret scanning
 gshook() {
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n🪝 Usage: gshook [dir=.]\n"
+        echo "Installs a pre-commit hook for secret scanning."
+        echo "Example:  gshook ~/.config/nomad\n"
+        return 0
+    }
+
     local dir="${1:-$PWD}"
 
     (
@@ -355,6 +489,13 @@ HOOK_EOF
 
 # 🧩 Utility: Isolate a directory as a git repo with .gitignore to prevent parent→child contamination
 gisolate() {
+        [[ "$1" == (-h|--help) ]] && {
+        echo "\n🧱 Usage: gisolate [dir=.]\n"
+        echo "Initialises a standalone git repo with isolation .gitignore."
+        echo "Prevents parent→child repo contamination."
+        echo "Example: gisolate ~/.config/zsh/prompt\n"
+        return 0
+    }
     local dir="${1:-$PWD}"
     (
         cd "$dir" || return 1
@@ -482,9 +623,9 @@ grepo() (
 
     # Generate repo name and get provider info using helper functions
     local commit_msg="${1:-Initial commit}" dir="$PWD"
-    local repo_name=$(grepo_name "$dir" "$2") || return 1
-    local provider=$(githost)
-    local user=$(gituser "$provider") || return 1
+    local repo_name=$(_grepo_name "$dir" "$2") || return 1
+    local provider=$(_githost)
+    local user=$(_gituser "$provider") || return 1
     local current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
 
     # User validation
@@ -511,7 +652,7 @@ grepo() (
     }
 
     # Check and set remote using helper function
-    local remote_url=$(gurl "$user" "$repo_name" "$provider") || return 1
+    local remote_url=$(_gurl "$user" "$repo_name" "$provider") || return 1
     git remote get-url origin &>/dev/null && { local current_remote=$(git remote get-url origin); [[ "$current_remote" != "$remote_url" ]] && { git remote set-url origin "$remote_url" || { zshlog --error -v "❌ Failed to update remote"; return 1; }; }; zshlog --info -v "⚠️  Remote 'origin' → $current_remote"; } || { git remote add origin "$remote_url" || { zshlog --error -v "❌ Failed to set remote"; return 1; }; zshlog --info -v "✅ Remote 'origin' → $remote_url"; }
 
     # Prevent parent → child repo contamination
@@ -570,8 +711,8 @@ grepo() (
     # Push to remote
     git push -u origin "$current_branch" || {
         zshlog --warn -v "⁉️  Push failed for '$user/$repo_name'. Checking remote repo..."
-        local cli_check=$(gitcli "repo view $user/$repo_name" "$provider") || return 1
-        local cli_create=$(gitcli "repo create $user/$repo_name --public" "$provider") || return 1
+        local cli_check=$(_gitcli "repo view $user/$repo_name" "$provider") || return 1
+        local cli_create=$(_gitcli "repo create $user/$repo_name --public" "$provider") || return 1
 
         eval "$cli_check" &>/dev/null || {
             zshlog --info -v "📡 Creating repo $user/$repo_name on $provider..."
@@ -605,16 +746,16 @@ gsub() (
     [[ -z "$subdir" ]] && { echo "$usage"; return 1; }
 
     # Get provider info
-    local provider=$(githost)
-    local user=$(gituser "$provider") || return 1
+    local provider=$(_githost)
+    local user=$(_gituser "$provider") || return 1
 
     # --- Submodule (child) repo logic ---
     (
         cd "$subdir" || { zshlog --error "❌ Could not cd into $subdir"; exit 1; }
 
         # Generate repo name using helper function
-        local repo_name=$(grepo_name "$PWD" "$custom_repo") || exit 1
-        local remote_url=$(gurl "$user" "$repo_name" "$provider") || exit 1
+        local repo_name=$(_grepo_name "$PWD" "$custom_repo") || exit 1
+        local remote_url=$(_gurl "$user" "$repo_name" "$provider") || exit 1
 
         # If not a repo, initialize
         ! git rev-parse --is-inside-work-tree &>/dev/null && {
@@ -660,8 +801,8 @@ gsub() (
             git branch --set-upstream-to=origin/main main 2>/dev/null || true
             git push || {
                 zshlog --warn "⚠️  Remote repository '$repo_name' not found on $provider"
-                local cli_check=$(gitcli "repo view $user/$repo_name" "$provider") || exit 1
-                local cli_create=$(gitcli "repo create $user/$repo_name --public" "$provider") || exit 1
+                local cli_check=$(_gitcli "repo view $user/$repo_name" "$provider") || exit 1
+                local cli_create=$(_gitcli "repo create $user/$repo_name --public" "$provider") || exit 1
 
                 if ! eval "$cli_check" &>/dev/null; then
                     zshlog --info -v "📡 Creating repo via CLI..."
@@ -682,8 +823,8 @@ gsub() (
         cd "$(dirname "$subdir")" || { zshlog --error "❌ Could not cd to parent of $subdir"; exit 1; }
 
         # Generate parent repo name
-        local parent_repo_name=$(grepo_name "$PWD") || exit 1
-        local parent_remote_url=$(gurl "$user" "$parent_repo_name" "$provider") || exit 1
+        local parent_repo_name=$(_grepo_name "$PWD") || exit 1
+        local parent_remote_url=$(_gurl "$user" "$parent_repo_name" "$provider") || exit 1
 
         # Safety: Only proceed if parent is already a git repo
         ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error "❌ Parent '$PWD' is not a git repo. Aborting submodule add"; exit 1; }
@@ -691,8 +832,8 @@ gsub() (
         zshlog --info -v "\n🔗 Adding submodule: $subdir\n"
 
         # Add submodule and commit .gitmodules change
-        local child_repo_name=$(grepo_name "$(cd "$subdir" && pwd)") || exit 1
-        local child_remote_url=$(gurl "$user" "$child_repo_name" "$provider") || exit 1
+        local child_repo_name=$(_grepo_name "$(cd "$subdir" && pwd)") || exit 1
+        local child_remote_url=$(_gurl "$user" "$child_repo_name" "$provider") || exit 1
 
         git submodule add "$child_remote_url" "$subdir"
         [[ -n "$(git status --porcelain .gitmodules 2>/dev/null)" ]] && { git add .gitmodules "$subdir"; git commit -m "${commit_msg} submodule - $subdir"; git push && zshlog --info -v "✅ Submodule added and parent pushed" && exit 0; } || zshlog --warn "⚠️  No changes to .gitmodules detected"
@@ -846,45 +987,72 @@ gunsub() {
 
 # ⚙️ gsync-push: Push submodule and parent
 gsync-push() {
-  local msg="${1:-Sync submodule and parent}"
-  gsubmod "$msg" && gparent "$msg"
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n🔼 Usage: gsync-push [commit-message]\n"
+        echo "Pushes both submodule and parent repos synchronously."
+        echo "Example: gsync-push 'Sync config updates'\n"
+        return 0
+    }
+    local msg="${1:-Sync submodule and parent}"
+    gsubmod "$msg" && gparent "$msg"
 }
 
 # ⚙️ gsync-pull: Pull latest for both submodule and parent
 gsync-pull() {
-  echo "📥 Pulling submodule..."
-  git pull --rebase && echo "📤 Pulling parent repo..." && cd .. && git pull --rebase
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n📥 Usage: gsync-pull\n"
+        echo "Pulls latest changes for submodule and parent repo.\n"
+        return 0
+    }
+    echo "📥 Pulling submodule..."
+    git pull --rebase && echo "📤 Pulling parent repo..." && cd .. && git pull --rebase
 }
 
 # ⚙️ gsync: Full fetch + push
 gsync() {
-  git fetch --all
-  gsync-status
-  gsync-push "$@"
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n🔁 Usage: gsync [commit-message]\n"
+        echo "Performs full fetch + push sync for submodule and parent."
+        echo "Example: gsync 'Routine sync'\n"
+        return 0
+    }
+    git fetch --all; gsync-status; gsync-push "$@"
 }
 
 # ⚙️ gsync-all: Recursively push all submodules + parent
 gsync-all() {
-  local msg="${1:-Update all submodules and parent}"
-  echo "🔁 Running gsync-all with commit message: \"$msg\""
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n🌀 Usage: gsync-all [commit-message]\n"
+        echo "Recursively syncs all submodules and parent repo.\n"
+        echo "Example: gsync-all 'Full system update'\n"
+        return 0
+    }
+    local msg="${1:-Update all submodules and parent}"
+    echo "🔁 Running gsync-all with commit message: \"$msg\""
 
-  for dir in */.git; do
-    local mod="${dir%/.git}"
-    echo "🔄 Syncing submodule: $mod"
-    (cd "$mod" && gsubmod "$msg") || echo "⚠️ Failed: $mod"
-  done
+    for dir in */.git; do
+        local mod="${dir%/.git}"
+        echo "🔄 Syncing submodule: $mod"
+        (cd "$mod" && gsubmod "$msg") || echo "⚠️ Failed: $mod"
+    done
 
-  echo "🔼 Syncing parent repo..."
-  gparent "$msg"
+    echo "🔼 Syncing parent repo..."
+    gparent "$msg"
 }
 
 # 🔧 gsub-genignore: Generate .gsubignore based on directory contents
 gsub-genignore() {
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n📂 Usage: gsub-genignore [target=.]\n"
+        echo "Generates or deduplicates .gsubignore for submodule exclusion."
+        echo "Example: gsub-genignore ~/.config\n"
+        return 0
+    }
     local target="${1:-.}"
     local outfile="$target/.gsubignore"
     local default_ignores=("logs" "node_modules" "__pycache__" ".venv" ".DS_Store" ".idea" ".vscode" "plugins" "lib" "docs" "bin" "dist" "build" "tmp" "temp" "cache" ".cache" ".git" "save" "saves" "backups" "backup" "env" "venv" "utils" "utility" "utilities" "scripts")
     local msg="# ---\n#   Please add all the folder's that are NOT git submodules\n#   OR do not want them to be a submodule. \
-                \n#   Alternatively, edit this file to add/remove folders\n#   that you do not want to make a submodule!\n# ---\n \
+                \n#   Alternatively, edit this file to add/remove folders\n#   that you do\/do not want to make a submodule!\n# ---\n \
                 \n# Auto-generated .gsubignore (Not SubModule Candidates)"
     local udirs="\n# === === === === User added folders below: === === === ==="
 
