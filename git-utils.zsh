@@ -5,13 +5,33 @@
 # =============================================================================
 # 🔧 CORE HELPER FUNCTIONS - Provider-agnostic utilities
 # =============================================================================
-
 # Internal utility e.g.: _gituser → returns active git username
+local SAVELOGFILE=""
+__glog_scope_start() {
+    SAVELOGFILE="$LOGFILE"
+    export LOGFILE="git-utils.zlog"
+    zshlog --info "${1:-${funcstack[2]}}: ↳ Logging Initiated: $(date '+%Y%m%d-%H:%M:%S')"
+    # The following ensures the scope-end always runs — even on errors.
+    # Better one::  [[ -o interactive ]] || trap '__glog_scope_end ${1:-${funcstack[2]}}' EXIT
+    if trap -l | grep -q RETURN; then
+        trap '__glog_scope_end ${1:-${funcstack[2]}}' RETURN
+    else
+        trap '__glog_scope_end ${1:-${funcstack[2]}}' EXIT
+    fi
+}
+__glog_scope_end() {
+    zshlog --info "${1:-${funcstack[2]}}: ↩ Concluded Logging at $(date '+%Y%m%d-%H:%M:%S')"
+    LOGFILE="$SAVELOGFILE"
+    SAVELOGFILE=""
+}
 
 # 🏷️  Generate standardized repository name from directory or custom input
 # Usage: _grepo_name [dir] [custom_name]
 _grepo_name() {
+
     local dir="${1:-$PWD}" custom="$2"
+
+    __glog_scope_start
 
     # Return validated custom name if provided
     [[ -n "$custom" ]] && { [[ "$custom" =~ ^[a-zA-Z0-9_-]+$ && ${#custom} -le 40 ]] && { echo "$custom"; return 0; } || { zshlog --error "Invalid repo name: $custom (alphanumeric/hyphens, max 40 chars)"; return 1; }; }
@@ -27,23 +47,28 @@ _grepo_name() {
 
     [[ "$name" == "-" || ${#name} -gt 40 ]] && { zshlog --error "Invalid generated name: $name"; return 1; }
 
+    __glog_scope_end
+
     echo "$name"
 }
 
 # 🌐 Get Git provider (github/gitlab) from GIT_PROVIDER env var
 # Usage: _githost
 _githost() {
+    __glog_scope_start
     local provider="${GIT_PROVIDER:-github}"
     provider="${provider:l}"
     case "$provider" in
         github|gitlab) echo "$provider" ;;
         *) zshlog --warn "Unknown GIT_PROVIDER: $provider, using github"; echo "github" ;;
     esac
+    __glog_scope_end
 }
 
 # 🔗 Generate SSH remote URL for provider
 # Usage: _gurl <username> <repo_name> [provider]
 _gurl() {
+    __glog_scope_start
     local user="$1" repo="$2" provider="${3:-$(_githost)}"
     [[ -z "$user" || -z "$repo" ]] && { zshlog --error "_gurl requires [username] and [repo_name]"; return 1; }
     case "$provider" in
@@ -51,22 +76,26 @@ _gurl() {
         gitlab) echo "git@gitlab.com:${user}/${repo}.git" ;;
         *) zshlog --error "Unsupported provider: $provider"; return 1 ;;
     esac
+    __glog_scope_end
 }
 
 # 🛠️  Get CLI command for provider (gh/glab)
 # Usage: _gitcli <command> [provider]
 _gitcli() {
+    __glog_scope_start
     local cmd="$1" provider="${2:-$(_githost)}"
     case "$provider" in
         github) echo "gh $cmd" ;;
         gitlab) echo "glab $cmd" ;;
         *) zshlog --error "Unsupported provider: $provider"; return 1 ;;
     esac
+    __glog_scope_end
 }
 
 # 👤 Get username from GITHUB_USER/GITLAB_USER env var
 # Usage: _gituser [provider]
 _gituser() {
+    __glog_scope_start
     local provider="${1:-$(_githost)}"
     case "$provider" in
         github)
@@ -80,6 +109,7 @@ _gituser() {
             ;;
         *) zshlog --error "Unsupported provider: $provider"; return 1 ;;
     esac
+    __glog_scope_end
 }
 
 # =============================================================================
@@ -88,6 +118,9 @@ _gituser() {
 
 # 🔐 Detect if directory contains sensitive files
 _gsensitive() {
+
+    __glog_scope_start
+
     local dir="${1:-$PWD}"
     local sensitive_patterns=(
         "*.env"
@@ -109,6 +142,8 @@ _gsensitive() {
     # Enable NULL_GLOB and GLOB_DOTS to match hidden files
     setopt local_options null_glob glob_dots
 
+    zshlog --info -v "🔍 Checking for sensitive files in ${(q)dir/#$HOME/~}..."
+
     for pattern in "${sensitive_patterns[@]}"; do
         # Use array expansion to check for matches
         local matches=("$dir"/$~pattern)
@@ -117,8 +152,12 @@ _gsensitive() {
         fi
     done
     return 1  # No sensitive files found
+
+    __glog_scope_end
+
 }
 
+# 🔐 Add files/folders to .gitcrypt manifest
 gitcrypt() {
     [[ "$1" == (-h|--help) || -z "$1" ]] && {
         echo "\n🔐 Usage: gitcrypt [-f] <path1> [path2 ...]"
@@ -132,7 +171,9 @@ gitcrypt() {
 
     local folder_mode=false;  [[ "$1" == "-f" ]] && { folder_mode=true; shift; }
 
-    [[ $# -eq 0 ]] && { zshlog --error "No paths given"; return 1; }
+    __glog_scope_start
+
+    [[ $# -eq 0 ]] && { zshlog --error -v "No paths given"; return 1; }
     [[ ! -f .gitcrypt ]] && touch .gitcrypt
 
     if [[ "$folder_mode" == true ]]; then
@@ -152,6 +193,8 @@ gitcrypt() {
     echo "" >> .gitcrypt
     sort -u .gitcrypt -o .gitcrypt
     zshlog --info "✅ .gitcrypt updated (deduplicated)" ; cat .gitcrypt
+
+    __glog_scope_end
 }
 
 # 🔐 Setup git-crypt with default sensitive file patterns
@@ -274,6 +317,9 @@ gencrypt_setup() {
     local dir="${1:-$PWD}" auto="${2:-true}" force="${3:-false}"
     (
         cd "$dir" || return 1
+
+        __glog_scope_start
+
         # Check if in git repo and git-crypt installed
         git rev-parse --is-inside-work-tree &>/dev/null || { zshlog --error "Not a git repo or not in one: ${dir/#$HOME/~}"; return 1; }
         command -v git-crypt &>/dev/null || { zshlog --warn "git-crypt not installed. Run: brew install git-crypt"; return 1; }
@@ -336,6 +382,8 @@ gencrypt_setup() {
         gshook "$dir" 2>/dev/null || zshlog --warn "Skipped hook install"
 
         zshlog --info "✅ git-crypt setup complete${force:+ (forced)}"
+
+        __glog_scope_end
     )
 }
 
@@ -348,9 +396,11 @@ gencrypt_check() {
         return 0
     }
     local file="$1"
+    __glog_scope_start
     ! command -v git-crypt &>/dev/null && { zshlog --error -v "git-crypt not installed"; return 1; }
     [[ ! -f .git/git-crypt/keys/default ]] && { zshlog --error -v "git-crypt not initialised in this repo"; return 1; }
     git-crypt status "$file" &>/dev/null && zshlog --info -v "File: $file - Encrypted ✓" || { zshlog --warn -v "File: $file - Not encrypted"; return 1; }
+    __glog_scope_end
 }
 
 # 🔐 Scan for potential secrets in unencrypted files
@@ -365,6 +415,9 @@ gsecrets() {
     }
 
     local dir="${1:-$PWD}"
+
+    __glog_scope_start
+
     zshlog --info -v "🔍 Scanning for potential secrets in ${dir/#$HOME/~}..."
 
     local secret_patterns=(
@@ -390,6 +443,8 @@ gsecrets() {
     [[ $found -eq 0 ]] && zshlog --info -v "✅ No obvious secrets detected" || { echo ""; zshlog --warn -v "⚠️  Review these files and ensure sensitive data is encrypted!"; }
 
     return $found
+
+    __glog_scope_end
 }
 
 # 🔐 Install pre-commit hook for secret scanning
@@ -409,6 +464,8 @@ gshook() {
         [[ ! -d .git ]] && { zshlog --error -v "Not a git repository: ${dir/#$HOME/~}"; return 1; }
 
         local hook_file=".git/hooks/pre-commit"
+
+        __glog_scope_start
 
         # Check if hook already exists
         if [[ -f "$hook_file" ]]; then
@@ -480,6 +537,9 @@ HOOK_EOF
         zshlog --info -v "✅ Secret scanning pre-commit hook installed"
         zshlog --info "Hook will scan for secrets before each commit"
         zshlog --info "To bypass: git commit --no-verify (not recommended)"
+
+        __glog_scope_end
+
     )
 }
 
@@ -488,27 +548,37 @@ HOOK_EOF
 # =============================================================================
 
 # 🧩 Utility: Isolate a directory as a git repo with .gitignore to prevent parent→child contamination
-gisolate() {
-        [[ "$1" == (-h|--help) ]] && {
-        echo "\n🧱 Usage: gisolate [dir=.]\n"
-        echo "Initialises a standalone git repo with isolation .gitignore."
-        echo "Prevents parent→child repo contamination."
-        echo "Example: gisolate ~/.config/zsh/prompt\n"
-        return 0
-    }
+_gisolate() {
     local dir="${1:-$PWD}"
     (
-        cd "$dir" || return 1
+        __glog_scope_start
+
+        zshlog --info "Entering git repo locally for isolating: ${(q)dir}"
+        cd "$dir" || { zshlog --error "❌  Directory not found or in-accessible!"; return 1;}
+
         if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-            echo "⚠️  Initializing isolated git repo in $dir..."
+            zshlog --warn "⚠️  Initializing isolated git repo in $dir..."
             git init || return 1
             git branch -M main || return 1
         fi
 
         local changed=0
-        [[ ! -f .gitignore ]] && { echo "*" > .gitignore; echo "!.gitignore" >> .gitignore; changed=1; } || { grep -qxF "*" .gitignore || { echo "*" >> .gitignore; changed=1; }; grep -qxF "!.gitignore" .gitignore || { echo "!.gitignore" >> .gitignore; changed=1; }; }
+        [[ ! -f .gitignore ]] && {
+            zshlog --info "Creating .gitignore to isolate repo ${(q)dir}"
+            echo "*" > .gitignore;
+            echo "!.gitignore" >> .gitignore; changed=1;
+        } || {
+            zshlog --info "Updating existing .gitignore to isolate repo ${(q)dir}"
+            grep -qxF "*" .gitignore || { echo "*" >> .gitignore; changed=1; };
+            grep -qxF "!.gitignore" .gitignore || { echo "!.gitignore" >> .gitignore; changed=1; };
+        }
 
-        [[ $changed -eq 1 ]] && { git add .gitignore; git commit -m "Update .gitignore to isolate repo"; }
+        [[ $changed -eq 1 ]] && {
+            git add .gitignore;
+            git commit -m "Update .gitignore to isolate repo";
+            zshlog --info "✅ .gitignore updated to isolate repo";
+        }
+        __glog_scope_end
     )
 }
 
@@ -520,7 +590,9 @@ gsubmod() {
   [[ -z "$msg" ]] && { echo "Usage: gsubmod <commit-message> [dir]"; return 1; }
 
   (
-    cd "$dir" || return 1
+    __glog_scope_start
+
+    cd "$dir" || { zshlog --error "❌  Directory not found or in-accessible!" ; return 1; }
     ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v "❌ Not a git repo: ${dir/#$HOME/~}"; return 1; }
 
     # Try to add files (non-fatal if fails - might already be staged)
@@ -559,6 +631,9 @@ gsubmod() {
         zshlog --info -v "✅ Submodule already complete. Nothing further to do."
         return 0
     fi
+
+    __glog_scope_end
+
   )
 }
 
@@ -570,7 +645,9 @@ gparent() {
   [[ -z "$msg" ]] && { echo "Usage: gparent <commit-message> [dir]"; return 1; }
 
   (
-    cd "$dir" || return 1
+    __glog_scope_start
+
+    cd "$dir" || { zshlog --error "❌  Directory not found or in-accessible!" ; return 1; }
     ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v "❌ Not a git repo: ${dir/#$HOME/~}"; return 1; }
 
     # Try to add files (non-fatal if fails - might already be staged)
@@ -609,6 +686,9 @@ gparent() {
         zshlog --info -v "✅ Parent repo already complete. Nothing further to do."
         return 0
     fi
+
+    __glog_scope_end
+
   )
 }
 
@@ -620,6 +700,8 @@ grepo() (
     local usage="\n\t❗ Usage: grepo [ [-h|--help] | [commit_msg] [repo_name] ]\n"
     [[ "$1" == (-h|--help|-help|/\?) ]] && { echo "$usage"; return 0; }
     [[ $# -gt 2 ]] && { echo "$usage"; return 1; }
+
+    __glog_scope_start
 
     # Generate repo name and get provider info using helper functions
     local commit_msg="${1:-Initial commit}" dir="$PWD"
@@ -656,7 +738,7 @@ grepo() (
     git remote get-url origin &>/dev/null && { local current_remote=$(git remote get-url origin); [[ "$current_remote" != "$remote_url" ]] && { git remote set-url origin "$remote_url" || { zshlog --error -v "❌ Failed to update remote"; return 1; }; }; zshlog --info -v "⚠️  Remote 'origin' → $current_remote"; } || { git remote add origin "$remote_url" || { zshlog --error -v "❌ Failed to set remote"; return 1; }; zshlog --info -v "✅ Remote 'origin' → $remote_url"; }
 
     # Prevent parent → child repo contamination
-    gisolate "$dir"
+    _gisolate "$dir"
 
     # Add and commit files
     zshlog --info -v "💫 Adding files from ${dir/#$HOME/~} to $repo_name.git..."
@@ -732,6 +814,9 @@ grepo() (
     else
         zshlog --warn -v "⚠️  Skipping parent module update — not in a Git repo."
     fi
+
+    __glog_scope_end
+
 )
 
 # 🧩 Git utility for submodules
@@ -745,13 +830,15 @@ gsub() (
     local subdir="$1" commit_msg="${2:-Adding}" custom_repo="$3"
     [[ -z "$subdir" ]] && { echo "$usage"; return 1; }
 
+    __glog_scope_start
+
     # Get provider info
     local provider=$(_githost)
-    local user=$(_gituser "$provider") || return 1
+    local user=$(_gituser "$provider") || { zshlog --error "❌  User ${(q)user}\@${(q)provider} not found!" ; return 1; }
 
     # --- Submodule (child) repo logic ---
     (
-        cd "$subdir" || { zshlog --error "❌ Could not cd into $subdir"; exit 1; }
+        cd "$subdir" || { zshlog --error "❌ Could not cd into ${(q)subdir}"; exit 1; }
 
         # Generate repo name using helper function
         local repo_name=$(_grepo_name "$PWD" "$custom_repo") || exit 1
@@ -771,7 +858,7 @@ gsub() (
         }
 
         # Prevent parent → child repo contamination
-        gisolate "$PWD"
+        _gisolate "$PWD"
 
         # Add and commit submodule repo
         # Try to add files (non-fatal if fails - might already be staged)
@@ -838,6 +925,9 @@ gsub() (
         git submodule add "$child_remote_url" "$subdir"
         [[ -n "$(git status --porcelain .gitmodules 2>/dev/null)" ]] && { git add .gitmodules "$subdir"; git commit -m "${commit_msg} submodule - $subdir"; git push && zshlog --info -v "✅ Submodule added and parent pushed" && exit 0; } || zshlog --warn "⚠️  No changes to .gitmodules detected"
     )
+
+    __glog_scope_end
+
 )
 
 # 🌀 gsub-all: Auto-init + add all folders in current dir as submodules
@@ -855,33 +945,17 @@ gsub-all() {
         local ignore_list=()
         local args=("$@")
 
+        __glog_scope_start
+
         # Parse options
         while [[ $# -gt 0 ]]; do
             case "$1" in
-                -L|--level)
-                    level="$2"
-                    shift 2
-                    ;;
-                --level=*)
-                    level="${1#*=}"
-                    shift
-                    ;;
-                --debug)
-                    debug=1
-                    shift
-                    ;;
-                -h|--help)
-                    echo "$usage"
-                    return 0
-                    ;;
-                -*)
-                    echo "❌ Unknown option: $1"
-                    return 1
-                    ;;
-                *)
-                    msg="$1"
-                    shift
-                    ;;
+                -L|--level)     level="$2";                     shift 2 ;;
+                --level=*)      level="${1#*=}";                shift ;;
+                --debug)        debug=1;                        shift ;;
+                -h|--help)      echo "$usage";                  return 0 ;;
+                -*)             zshlog --warn -v "❌ Unknown option: ${(q)1}";   return 1 ;;
+                *)              msg="$1";                       shift ;;
             esac
         done
 
@@ -959,6 +1033,9 @@ gsub-all() {
         # Disable debug mode before exiting subshell
         [[ $debug -eq 1 ]] && set +x
     )
+
+    __glog_scope_end
+
 }
 
 # Usage: gunsub <submodule-path>
@@ -972,9 +1049,11 @@ gunsub() {
 
     [[ -z "$name" ]] && { echo "Usage: gunsub <submodule-path>"; return 1; }
 
-    [[ ! -d "$path" ]] && { echo "❌ No such submodule directory: $path"; return 1; }
+    __glog_scope_start
 
-    echo "⚠️  This will completely remove the submodule: $path"
+    [[ ! -d "$path" ]] && { zshlog --error -v "❌ No such submodule directory: $path"; return 1; }
+
+    zshlog --warn -v "⚠️  This will completely remove the submodule: $path"
     read -r " Proceed? [y/N]: " REPLY
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { echo "❎ Cancelled."; return 0; }
 
@@ -982,17 +1061,36 @@ gunsub() {
     git rm -f "$path" &&
     rm -rf ".git/modules/$name" &&
     git commit -m "Remove submodule: ${path#./}" &&
-    echo "✅ Submodule removed: $path"
+    zshlog --info -v "✅ Submodule removed: $path"
+
+    __glog_scope_end
+
 }
+
+# ⚙️ gsync-status: Show sync status for submodule and parent
+gsync-status() {
+    local parent_dir=$(git rev-parse --show-superproject-working-tree 2>/dev/null)
+
+    read BEHIND AHEAD <<< "$(git rev-list --left-right --count @{u}...HEAD 2>/dev/null || echo "0 0")"; sub_stat="📊 Ahead: $AHEAD, Behind: $BEHIND"
+    printf "  📦 Submodule:      %-20s (%s)\n" "$(basename "$PWD")" "$sub_stat"
+
+    read BEHIND AHEAD <<< "$(git -C "$parent" rev-list --left-right --count origin/$(git -C "$parent" rev-parse --abbrev-ref HEAD)...HEAD 2>/dev/null || echo "0 0")"; par_stat="📊 Ahead: $AHEAD, Behind: $BEHIND"
+    printf "  📦 Parent Module:  %-20s (%s)\n" "${parent_dir/$HOME/~}" "$par_stat"
+
+    [[ -n "$parent" ]] && echo -e "\n🧩 Parent repo: $parent" && git -C "$parent" status -sb
+
+    echo -e "\n📂 Repository overview:" && git status --short --untracked-files=all
+}
+
 
 # ⚙️ gsync-push: Push submodule and parent
 gsync-push() {
-    [[ "$1" == (-h|--help) ]] && {
-        echo "\n🔼 Usage: gsync-push [commit-message]\n"
-        echo "Pushes both submodule and parent repos synchronously."
-        echo "Example: gsync-push 'Sync config updates'\n"
-        return 0
-    }
+    # [[ "$1" == (-h|--help) ]] && {
+    #     echo "\n🔼 Usage: gsync-push [commit-message]\n"
+    #     echo "Pushes both submodule and parent repos synchronously."
+    #     echo "Example: gsync-push 'Sync config updates'\n"
+    #     return 0
+    # }
     local msg="${1:-Sync submodule and parent}"
     gsubmod "$msg" && gparent "$msg"
 }
@@ -1004,8 +1102,8 @@ gsync-pull() {
         echo "Pulls latest changes for submodule and parent repo.\n"
         return 0
     }
-    echo "📥 Pulling submodule..."
-    git pull --rebase && echo "📤 Pulling parent repo..." && cd .. && git pull --rebase
+    echo "📥 Pulling submodule..." && git pull --rebase &&
+    echo "📤 Pulling parent repo..." && cd .. && git pull --rebase
 }
 
 # ⚙️ gsync: Full fetch + push
@@ -1027,17 +1125,23 @@ gsync-all() {
         echo "Example: gsync-all 'Full system update'\n"
         return 0
     }
+
+    __glog_scope_start
+
     local msg="${1:-Update all submodules and parent}"
-    echo "🔁 Running gsync-all with commit message: \"$msg\""
+    zshlog --info -v "🔁 Running gsync-all with commit message: \"$msg\""
 
     for dir in */.git; do
         local mod="${dir%/.git}"
-        echo "🔄 Syncing submodule: $mod"
-        (cd "$mod" && gsubmod "$msg") || echo "⚠️ Failed: $mod"
+        zshlog --info -v "🔄 Syncing submodule: $mod"
+        (cd "$mod" && gsubmod "$msg") || zshlog --error -v "⚠️ Failed: $mod"
     done
 
-    echo "🔼 Syncing parent repo..."
+    zshlog --info -v "🔼 Syncing parent repo..."
     gparent "$msg"
+
+    __glog_scope_end
+
 }
 
 # 🔧 gsub-genignore: Generate .gsubignore based on directory contents
@@ -1058,12 +1162,14 @@ gsub-genignore() {
 
     setopt local_options null_glob  # 👈 Prevents "no matches found"
 
+    __glog_scope_start
+
     # Check if file exists and prompt for overwrite
     local regenerate=1
     if [[ -e "$outfile" ]]; then
         read -r "?⚠️  $outfile already exists. Overwrite? [y/N] " reply
         if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-            echo "🚫 Skipped regeneration. Deduplicating existing file...\n"
+            zshlog --warn -v "🚫 Skipped regeneration. Deduplicating existing file...\n"
             regenerate=0
         fi
     fi
@@ -1071,6 +1177,8 @@ gsub-genignore() {
     # Generate file only if user approved or file doesn't exist
     if [[ $regenerate -eq 1 ]]; then
         echo "${msg}" > "$outfile"
+
+        zshlog --info -v "🛠️  Generating ${(q)outfile} with standard ignores..."
 
         # Collect unique ignores from current directory that match defaults
         local -a found_ignores=()
@@ -1090,6 +1198,9 @@ gsub-genignore() {
 
         echo "${udirs}" >> "$outfile"
     else
+
+        zshlog --info -v "🛠️  Deduplicating existing ${(q)outfile}..."
+
         # Deduplicate existing file (preserve comments and structure)
         local tempfile="${outfile}.tmp"
         local -a seen_entries=()
@@ -1117,7 +1228,8 @@ gsub-genignore() {
     fi
 
     # Show the file contents
-    [[ $regenerate -eq 1 ]] && echo "✅ Created $outfile with standard ignores.\n" || echo "✅ Deduplicated $outfile.\n"
+    [[ $regenerate -eq 1 ]] && zshlog --info -v "✅ Created ${(q)outfile} with standard ignores.\n" || zshlog --info -v "✅ Deduplicated ${(q)outfile}.\n"
+
     echo "📂 Ignored folders:(Not SubModule candidates)"
     \cat "$(realpath "$outfile")"
 
@@ -1152,6 +1264,9 @@ gsub-genignore() {
     # Print default ignorable folders if no ignored or non-ignored folders found
     local ignore_printed=$(grep -Ev '^\s*(#|$)' "$outfile")
     [[ -z "$ignore_printed" && "$found_non_ignored" -eq 0 ]] && { echo "\n📂 Ignorable folders (default set):"; for folder in "${default_ignores[@]}"; do echo "    - $folder/"; done; }
+
+    __glog_scope_end
+
 }
 
 # 🔧 git-genignore: Generate .gitignore for any git repository
@@ -1208,11 +1323,15 @@ git-genignore() {
         "credentials/"
     )
 
+    __glog_scope_start
+
     # Check if directory is a git repo
     if ! git -C "$target" rev-parse --is-inside-work-tree &>/dev/null; then
-        zshlog --error "Not a git repository: ${target/#$HOME/~}"
+        zshlog --error "❌ Not a git repository: ${target/#$HOME/~}"
         return 1
     fi
+
+    zshlog --info "🛠️  Generating .gitignore in ${target/#$HOME/~}..."
 
     # Check if file exists and prompt for overwrite
     local regenerate=1
@@ -1224,6 +1343,8 @@ git-genignore() {
         fi
     fi
 
+    zshlog --info "🛠️  Generating ${(q)outfile} with standard ignore patterns..."
+
     # Generate file
     echo "# .gitignore - Generated by git-genignore" > "$outfile"
     echo "# Add custom patterns below the default sections" >> "$outfile"
@@ -1233,6 +1354,8 @@ git-genignore() {
         echo "$line" >> "$outfile"
     done
 
+    zshlog --info "✅ Standard ignore patterns added."
+
     echo "" >> "$outfile"
     echo "# === === === === Custom ignores below: === === === ===" >> "$outfile"
 
@@ -1240,4 +1363,7 @@ git-genignore() {
     echo "📄 File location: ${outfile/#$HOME/~}"
     echo ""
     echo "💡 Tip: Edit the file to add project-specific patterns below the custom section."
+
+    __glog_scope_end
+
 }
