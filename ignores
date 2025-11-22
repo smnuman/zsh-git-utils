@@ -1,0 +1,17 @@
+#!/usr/bin/env zsh
+# ~/.config/zsh/git-utils/ignores
+# Adds given patterns to .gitignore in the current directory
+
+[[ -n "$1" ]] || {
+    echo "\n\tUsage: $(basename $0) <pattern1> [pattern2] [...]\n"
+    echo "\tAdds the given patterns to .gitignore in the current directory.\n"
+    echo "Patterns now in .gitignore:"; cat ./.gitignore
+    return 1
+}
+
+touch ./.gitignore
+local pattern; for pattern in "$*"; do echo "$pattern" >> ./.gitignore; done
+
+cat ./.gitignore | sort -u > ./.gitignore.tmp; mv ./.gitignore.tmp ./.gitignore
+
+echo "Added patterns to .gitignore:"; cat ./.gitignore

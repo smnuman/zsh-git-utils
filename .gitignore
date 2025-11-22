@@ -1,3 +1,7 @@
+.DS_Store
 *.log
 *.tmp
-.DS_Store
+*.arc
+*.archive
+git_users.zsh
+old-files/
