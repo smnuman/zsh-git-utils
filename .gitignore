@@ -1,7 +1,11 @@
 .DS_Store
 *.log
 *.tmp
+*.bak
+*.backup
 *.arc
 *.archive
 git_users.zsh
 old-files/
+README_*.md
+run-once-*.zsh
