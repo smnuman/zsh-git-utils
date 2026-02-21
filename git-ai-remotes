@@ -1,0 +1,450 @@
+#!/usr/bin/env zsh
+# source it in git-utils/git-ai-remotes
+
+git_ai::scope() {
+    if [[ $# -gt 0 ]]; then
+        print -l -- "$@"
+    elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git rev-parse --show-toplevel
+    else
+        print -u2 "✗ Not in a git repo and no paths provided"
+        return 1
+    fi
+}
+
+git_ai::discover_repos() {
+    local path="$1"
+
+    if [[ -d "$path/.git" ]]; then
+        print "$path"
+        find "$path" -mindepth 2 -type d -name ".git" -exec dirname {} \;
+    else
+        print -u2 "✗ $path is not a git repo"
+    fi
+}
+
+
+# =============================================
+# File: ~/.config/zsh/git-utils/git-ai-remotes
+# ──────────────────────────────────────────────────────────────
+
+# Public command
+# Push to all AI remotes (xai, openai, anthropic, google, cursor)
+git-ai-push() {
+    local branch="${1:-$(git rev-parse --abbrev-ref HEAD)}"
+    local -a ai_remotes=(xai openai anthropic google cursor)
+    local -a existing=($(git remote | grep -F -x -f <(printf "%s\n" "${ai_remotes[@]}")))
+
+    if (( ${#existing} == 0 )); then
+        print -P "%F{yellow}No AI remotes found in this repo%f"
+        return 0
+    fi
+
+    local r
+    for r in "${existing[@]}"; do
+        print -P "→ Pushing %F{cyan}${r}/${branch}%f"
+        git push "$r" "$branch" || print -P "  %F{yellow}failed%f"
+    done
+}
+
+git-ai-setup() {
+    (( ${+GIT_USER} && $#GIT_USER )) || {
+        print -P "%F{red}ERROR: GIT_USER is unset or empty. Cannot continue.%f"
+        print -P "→ Run: source ~/.config/zsh/zsh-initgit.zsh"
+        return 1
+    }
+    setopt NO_NOTIFY NO_MONITOR
+
+    local dry=0 explain=0
+    # local count_skipped_mismatch=0        # taken to below
+    local -a only remotes=(xai openai anthropic google cursor)
+    __git_ai_parse_args "$@" || return 1
+    (( $#only )) && remotes=("${only[@]}")
+    local target_dir="${PWD}"
+
+# echo "\n\n\tbefore parsing....\n\n"
+    # local -a repos
+    # __git_ai_find_repos "$target_dir" repos || return 1
+    local -a repos
+    repos=($(__git_ai_find_repos "$target_dir"))
+
+# echo "\n\n\tafter parsing.... \n\n"
+    (( ${#repos} == 0 )) && {
+        print -P "%F{yellow}No git repositories found under ${target_dir}%f"
+        return 0
+    }
+
+    print -P "%F{blue}Found ${#repos} git repo(s)%f"
+
+    local count_processed=0 count_skipped_origin=0 count_skipped_gsub=0 count_added=0 count_skipped_mismatch=0
+
+    # ── Parallel version ─────────────────────────────────────────────
+
+    local -a commands=()
+
+    for repo in "${repos[@]}"; do
+        # Important: we pass variable names by reference (as strings)
+        commands+=("__git_ai_process_repo ${(qq)repo} $dry $explain ${(qq@)remotes} \
+                        count_processed count_skipped_origin count_skipped_gsub count_skipped_mismatch count_added")
+    done
+
+    # Run with max 6 concurrent jobs (adjust to taste / your machine)
+    git_ai::run_parallel 6 "${commands[@]}" || print -P "%F{yellow}Some parallel jobs failed%f"
+
+    # After all jobs finished, the counters are updated because they are modified
+    # in the parent scope (zsh nameref-like behavior via variable name passing)
+
+    __git_ai_print_summary \
+        "${#repos}" \
+        "$count_processed" \
+        "$((count_skipped_origin + count_skipped_gsub + count_skipped_mismatch))" \
+        "$count_skipped_origin" \
+        "$count_skipped_gsub" \
+        "$count_skipped_mismatch" \
+        "$count_added"
+
+    unsetopt NO_NOTIFY NO_MONITOR
+
+}
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+__git_ai_parse_args() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --dry)               dry=1 ;;
+            --explain-ignore)    explain=1 ;;
+            --only=*)            only=(${(s:,:)arg#*=}) ;;
+            *)                   print -P "%F{yellow}Unknown arg: $arg%f"; return 1 ;;
+        esac
+    done
+}
+
+# __git_ai_find_repos() {
+#     local dir="$1"
+#     local -a &repos=("${(@)2}")
+# echo "\n\n\tIn find repos after \&repo\n\n"
+#     repos=(${(f)"$(find "$dir" -type d -name .git -not -path '*/\.git/*' 2>/dev/null | xargs -n1 dirname)"})
+# echo "\n\n\tIn find repos: after find\n\n"
+# }
+
+__git_ai_find_repos() {
+    local dir="$1"
+
+    find "$dir" -type d -name .git -not -path '*/\.git/*' -prune 2>/dev/null \
+        | xargs -n1 dirname
+}
+
+__git_ai_get_repo_name() {
+    local pwd="$PWD"
+    if [[ "$pwd" = "$HOME/.config" ]]; then
+        print "dotconfig"
+        return 0
+    fi
+
+    local parent=$(basename "$(dirname "$pwd")")
+    local current=$(basename "$pwd")
+
+    # Remove leading and trailing dots, replace inner dots with -
+    parent=${parent##*.}           # remove leading .
+    parent=${parent%%.*}           # remove trailing .
+    parent=${parent//./-}          # inner . → -
+
+    current=${current##*.}
+    current=${current%%.*}
+    current=${current//./-}
+
+    # Avoid empty parts (safety)
+    [[ -z "$parent" ]]  && parent="unknown"
+    [[ -z "$current" ]] && current="repo"
+
+    print "${parent}-${current}"
+}
+
+__git_ai_should_skip_origin() {
+    local origin_url="$1"
+    [[ -z "$origin_url" || ! "$origin_url" =~ ${GIT_USER} ]]
+}
+
+__git_ai_parent_dir() {
+    local repo_path="$1"
+    dirname "${repo_path%/}"
+}
+
+__git_ai_should_skip_gsubignore() {
+    local repo_path="$1"                    # full path to the repo, e.g. /home/user/projects/team/web-frontend
+    local test_path="$2"                    # "web-frontend/"
+
+    local parent_dir
+    parent_dir=$(__git_ai_parent_dir "$repo_path")
+
+    local gsubignore="${parent_dir}/.gsubignore"
+    [[ ! -f "$gsubignore" ]] && return 1
+
+    local -a patterns
+    # patterns=(${(f)"$(sed '/^[[:space:]]*$/d; /^#/d; s#[[:space:]]*/[[:space:]]*$//' "$gsubignore")"})
+
+    patterns=(${(f)"$(<"$gsubignore")"})
+    patterns=("${(@M)patterns:#(#b)([^#[:space:]]##)(*)/?(*)}")   # remove comments + trailing spaces + trailing /
+    patterns=("${(@)patterns##[[:space:]]##}")                    # trim leading spaces
+    patterns=("${(@)patterns%%[[:space:]]##}")                    # trim trailing spaces
+    patterns=("${(@)patterns:#}")                                 # remove empty lines
+
+    local pat
+    for pat in "${patterns[@]}"; do
+        [[ -z "$pat" ]] && continue
+        [[ "$test_path" == "$pat" ]] && return 0
+    done
+
+    return 1
+}
+
+__git_ai_process_repo() {
+    local repo="$1" dry="$2" explain="$3"
+    local -a remotes=("${(@)4}")
+    local cp_var="$5" cso_var="$6" csg_var="$7" ca_var="$8"
+
+    (
+        cd "$repo" || return 1
+
+        local repo_name branch repo_basename test_path origin_url
+
+        # ── 1. Very cheap: parent .gsubignore check first ───────────────
+        repo_basename="${PWD##*/}"
+        test_path="${repo_basename}/"
+
+        if __git_ai_should_skip_gsubignore "$repo" "$test_path"; then
+            (( explain )) && print -P "skipped early by parent .gsubignore → %F{cyan}${repo_basename}%f"
+            (( ${csg_var}++ ))
+            return 0
+        fi
+
+        # ── 2. Now check origin (requires git + potentially network) ────
+        origin_url=$(git remote get-url origin 2>/dev/null)
+        if [[ -z "$origin_url" ]]; then
+            (( explain )) && print -P "skipped (no origin) → %F{cyan}${repo_basename}%f"
+            (( ${cso_var}++ ))
+            return 0
+        fi
+
+        if __git_ai_should_skip_origin "$origin_url"; then
+            (( explain )) && print -P "skipped (not my origin) → %F{cyan}${repo_basename}%f"
+            (( ${cso_var}++ ))
+            return 0
+        fi
+
+        # ── 3. Name validation (cheap, local) ───────────────────────────
+        local repo_from_origin=${origin_url##*/}
+        repo_from_origin=${repo_from_origin%.git}
+
+        local path_based
+        path_based=$(__git_ai_get_repo_name) || {
+            (( explain )) && print -P "skipped (bad convention) → %F{cyan}${repo_from_origin}%f"
+            (( ${cso_var}++ ))
+            return 0
+        }
+
+        if [[ "$repo_from_origin" != "$path_based" ]]; then
+            (( explain )) && print -P "%F{yellow}name mismatch%f → origin:${repo_from_origin} path:${path_based} → skipping"
+            (( ${cso_var}++ ))   # or your mismatch counter
+            return 0
+        fi
+
+        repo_name="$repo_from_origin"
+
+        branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "main")
+
+        # ── 4. Proceed ──────────────────────────────────────────────────
+        local -a missing=()
+        local r
+        for r in "${remotes[@]}"; do
+            git remote get-url "$r" &>/dev/null || missing+=("$r")
+        done
+
+        if (( ${#missing} == 0 )); then
+            (( explain )) && print -P "already complete → %F{cyan}${repo_name}%f"
+        else
+            print -P "Processing %F{yellow}${repo_name}%f  (missing: ${missing[*]})"
+            for r in "${missing[@]}"; do
+                local url="git@github.com:${GIT_USER}/${repo_name}.git"
+                if (( dry )); then
+                    print "  would add ${r} → ${url}"
+                else
+                    git remote add "$r" "$url" 2>/dev/null \
+                        && { print -P "  %F{green}added ${r}%f"; (( ${ca_var}++ )); } \
+                        || print -P "  %F{yellow}${r} failed / already exists%f"
+                fi
+            done
+        fi
+
+        (( ${cp_var}++ ))
+    )
+}
+
+__git_ai_print_summary() {
+    local total="$1"          # total repos found
+    local proc="$2"           # processed
+    local skip="$3"           # total skipped
+    local skip_o="$4"         # skipped: not my origin
+    local skip_g="$5"         # skipped: .gsubignore
+    local skip_m="$6"         # skipped: name mismatch
+    local added="$7"          # remotes actually added
+
+    print ""
+    print -P "%F{blue}Summary:%f"
+    print -P "  Found git repos total .... $total"
+    print -P "  Processed ................ $proc"
+    print -P "  Skipped total ............ $skip"
+    print -P "    └─ not my origin ...... $skip_o"
+    print -P "    └─ .gsubignore ........ $skip_g"
+    print -P "    └─ name mismatch ...... $skip_m"
+    (( added > 0 )) && print -P "  Remotes actually added ... $added"
+}
+
+# ── Helpers end ──────────────────────────────────────────────────────
+# ======================================
+
+git_ai::run_parallel() {
+    local max="${1:-4}"
+    shift
+
+    local running=0
+
+    for cmd in "$@"; do
+        # Start the command in background
+        eval "$cmd" &
+
+        (( ++running ))
+
+        # If at limit, wait for **any** one job to finish
+        while (( running >= max )); do
+            wait 2>/dev/null   # wait for next finished child (no -n/-p)
+            (( --running ))
+        done
+    done
+
+    # Wait for everything left
+    wait
+}
+
+git_ai::repo_name() {
+    local url
+    url="$(git remote get-url origin 2>/dev/null)" || return 1
+    print "${url:t:r}"
+}
+
+git_ai::branch() {
+    git symbolic-ref --quiet --short HEAD 2>/dev/null \
+    || git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p' \
+    || echo main
+}
+
+git_ai::repos() {
+    local base="$1"
+    find "$base" -type d -name ".git" -print0 | xargs -0 -n1 dirname
+}
+
+# #
+# git-ai-status() {
+#     local base="$HOME/.config"
+
+#     printf "%-20s %-8s %s\n" "REPO" "BRANCH" "REMOTES"
+
+#     for repo in $(git_ai::repos "$base"); do
+#         git_ai::ignored "$repo" && continue
+#         (
+#             cd "$repo" || exit
+#             printf "%-20s %-8s " "$(git_ai::repo_name)" "$(git_ai::branch)"
+#             git remote | tr '\n' ' '
+#             echo
+#         )
+#     done
+# }
+
+# git-ai-doctor() {
+#     local base="$HOME/.config"
+
+#     for repo in $(git_ai::repos "$base"); do
+#         (
+#             cd "$repo" || exit
+#             git remote get-url origin >/dev/null 2>&1 \
+#               || print "⚠ missing origin → $repo"
+
+#             git symbolic-ref HEAD >/dev/null 2>&1 \
+#               || print "⚠ detached HEAD → $repo"
+#         )
+#     done
+# }
+
+# ──────────────────────────────────────────────────────────────
+# git-ai-status ── show overview table
+# ──────────────────────────────────────────────────────────────
+
+git-ai-status() {
+    local base="${PWD}"
+
+    # Header
+    printf "%-30s %-12s %s\n" "REPO" "BRANCH" "REMOTES"
+
+    local -a repos
+    repos=(${(f)"$(find "$base" -type d -name .git -not -path '*/\.git/*' -prune 2>/dev/null | xargs -n1 dirname)"})
+
+    for repo in "${repos[@]}"; do
+        (
+            cd "$repo" 2>/dev/null || return
+            # Skip if no origin or origin doesn't contain GIT_USER (same logic as setup)
+            local origin_url=$(git remote get-url origin 2>/dev/null)
+            __git_ai_should_skip_origin "$origin_url" && return
+
+            local repo_name branch remotes_list
+            repo_name=$(__git_ai_get_repo_name)
+            branch=$(git_ai::branch)
+            remotes_list=$(git remote | tr '\n' ' ')
+
+            printf "%-30s %-12s %s\n" "${repo_name:0:29}" "${branch:0:11}" "${remotes_list:-—}"
+        )
+    done
+}
+
+# ──────────────────────────────────────────────────────────────
+# git-ai-doctor ── basic health check
+# ──────────────────────────────────────────────────────────────
+
+git-ai-doctor() {
+    local base="${PWD}"
+
+    local -a repos
+    repos=(${(f)"$(find "$base" -type d -name .git -not -path '*/\.git/*' -prune 2>/dev/null | xargs -n1 dirname)"})
+
+    local issues=0
+
+    for repo in "${repos[@]}"; do
+        (
+            cd "$repo" 2>/dev/null || { ((issues++)); return; }
+
+            local origin_url repo_name
+            origin_url=$(git remote get-url origin 2>/dev/null)
+            repo_name=$(__git_ai_get_repo_name)
+
+            if [[ -z "$origin_url" ]]; then
+                print -P "⚠ missing origin remote → %F{cyan}${repo_name}%f"
+                ((issues++))
+            fi
+
+            if ! git symbolic-ref HEAD >/dev/null 2>&1; then
+                print -P "⚠ detached HEAD → %F{cyan}${repo_name}%f"
+                ((issues++))
+            fi
+
+            # Optional: warn if none of the AI remotes exist
+            local has_ai=0
+            for r in xai openai anthropic google cursor; do
+                git remote get-url "$r" &>/dev/null && ((has_ai++))
+            done
+            (( has_ai == 0 )) && print -P "⚠ no AI remotes found → %F{cyan}${repo_name}%f"
+        )
+    done
+
+    (( issues == 0 )) && print -P "%F{green}No obvious issues found.%f"
+}

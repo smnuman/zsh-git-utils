@@ -1,6 +1,7 @@
 #!/usr/bin/env zsh
 # ~/.config/zsh/git-utils/git-utils.zsh
 # ---
+GIT_UTILS_DEBUG="${GIT_UTILS_DEBUG:-false}"    # git-utils internal debug messages
 
 # Weekly cleanup for git-utils logs (keeps 1 week of history)
 git_utils_log_cleanup() {
@@ -41,15 +42,73 @@ __glog_scope_start() {
     export LOGFILE="git-utils.zlog"
 
     local caller="${1:-${funcstack[2]:-main}}"
-    zshlog --info -v "${caller}: ↳ Logging Initiated: $(date '+%Y%m%d-%H:%M:%S')"
+    zshlog --info -v=$GIT_UTILS_DEBUG "${caller}: ↳ Logging Initiated: $(date '+%Y%m%d-%H:%M:%S')"
 }
 __glog_scope_end() {
     local caller="${1:-${funcstack[2]:-main}}"
-    zshlog --info -v "${caller}: ↩ Concluded Logging at $(date '+%Y%m%d-%H:%M:%S')"
+    zshlog --info -v=$GIT_UTILS_DEBUG "${caller}: ↩ Concluded Logging at $(date '+%Y%m%d-%H:%M:%S')"
 
     LOGFILE="$SAVELOGFILE"
     SAVELOGFILE=""
 }
+
+# Toggle SSH origin github.com ↔ gitlab.com
+git-toggle-remote() {
+    if [[ ! -d .git ]]; then
+        echo -e "\033[1;31mnot a git repo\033[0m" >&2
+        return 1
+    fi
+
+    local url=${$(git remote get-url origin 2>/dev/null):-}
+    [[ -z $url ]] && {
+        echo -e "\033[1;31mno origin remote\033[0m" >&2
+        return 1
+    }
+    [[ $url != git@* ]] && {
+        echo -e "\033[1;33mwarning: only ssh supported\033[0m" >&2
+        return 1
+    }
+
+    local reset=$'\e[0m'
+    local yellow=$'\e[1;33m'
+    local green=$'\e[1;32m'
+    local cyan=$'\e[1;36m'
+
+    if [[ $url == *github.com* ]]; then
+        git remote set-url origin "${url/github.com/gitlab.com}"
+        echo -e "  ${yellow}→${reset} switching to ${cyan}GitLab${reset}"
+    elif [[ $url == *gitlab.com* ]]; then
+        git remote set-url origin "${url/gitlab.com/github.com}"
+        echo -e "  ${yellow}→${reset} switching to ${green}GitHub${reset}"
+    else
+        echo -e "\033[1;31mhost not github.com or gitlab.com\033[0m" >&2
+        return 1
+    fi
+
+    echo
+    git remote -v | command grep '^origin' | sed "s/^origin\s\+/${yellow}origin${reset}  /"
+}
+
+# git-aliases() {
+#   git config --get-regexp '^alias\.' |
+#   awk '{sub(/^alias\./,""); printf "%-16s = %s\n", $1, substr($0, index($0," ")+1)}'
+# }
+
+git-aliases() {
+  git config --get-regexp '^alias\.' 2>/dev/null |
+  sed -E 's/^alias\.([^ ]+)[ ]+(.*)$/\1\t\2/' |
+  while IFS=$'\t' read -r key val; do
+    [[ -z "$key" ]] && continue
+    if [[ -n "$val" ]]; then
+      print -P "%F{cyan}${key}%-18s%f %F{244}=%f %F{green}${val}%f" ""
+    else
+      print -P "%F{cyan}${key}%f"
+    fi
+  done
+}
+
+source "${GUTILS}/git-ai-remotes"
+
 
 # 🏷️  Generate standardized repository name from directory or custom input
 # Usage: _grepo_name [dir] [custom_name]
@@ -60,7 +119,7 @@ _grepo_name() {
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
     # Return validated custom name if provided
-    [[ -n "$custom" ]] && { [[ "$custom" =~ ^[a-zA-Z0-9_-]+$ && ${#custom} -le 40 ]] && { echo "$custom"; return 0; } || { zshlog --error -v "Invalid repo name: $custom (alphanumeric/hyphens, max 40 chars)"; return 1; }; }
+    [[ -n "$custom" ]] && { [[ "$custom" =~ ^[a-zA-Z0-9_-]+$ && ${#custom} -le 40 ]] && { echo "$custom"; return 0; } || { zshlog --error -v=$GIT_UTILS_DEBUG "Invalid repo name: $custom (alphanumeric/hyphens, max 40 chars)"; return 1; }; }
 
     # Generate from directory: parent-child format
     local base="${dir:t}"           # Get basename (tail)
@@ -69,9 +128,9 @@ _grepo_name() {
     parent="${parent#.}"            # Strip leading dot if present
     local name="${parent}-${base}"
 
-    [[ -z "$base" || -z "$parent" ]] && { zshlog --error -v "Failed to generate repo name from: $dir"; return 1; }
+    [[ -z "$base" || -z "$parent" ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "Failed to generate repo name from: $dir"; return 1; }
 
-    [[ "$name" == "-" || ${#name} -gt 40 ]] && { zshlog --error -v "Invalid generated name: $name"; return 1; }
+    [[ "$name" == "-" || ${#name} -gt 40 ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "Invalid generated name: $name"; return 1; }
 
     echo "$name"
 }
@@ -86,7 +145,7 @@ _githost() {
     provider="${provider:l}"
     case "$provider" in
         github|gitlab) echo "$provider" ;;
-        *) zshlog --warn "Unknown GIT_PROVIDER: $provider, using github"; echo "github" ;;
+        *) zshlog --warn -v=$GIT_UTILS_DEBUG "Unknown GIT_PROVIDER: $provider, using github"; echo "github" ;;
     esac
 
 }
@@ -98,11 +157,11 @@ _gurl() {
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
     local user="$1" repo="$2" provider="${3:-$(_githost)}"
-    [[ -z "$user" || -z "$repo" ]] && { zshlog --error "_gurl requires [username] and [repo_name]"; return 1; }
+    [[ -z "$user" || -z "$repo" ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "_gurl requires [username] and [repo_name]"; return 1; }
     case "$provider" in
         github) echo "git@github.com:${user}/${repo}.git" ;;
         gitlab) echo "git@gitlab.com:${user}/${repo}.git" ;;
-        *) zshlog --error "Unsupported provider: $provider"; return 1 ;;
+             *) zshlog --error -v=$GIT_UTILS_DEBUG "Unsupported provider: $provider"; return 1 ;;
     esac
 
 }
@@ -117,7 +176,7 @@ _gitcli() {
     case "$provider" in
         github) echo "gh $cmd" ;;
         gitlab) echo "glab $cmd" ;;
-        *) zshlog --error "Unsupported provider: $provider"; return 1 ;;
+             *) zshlog --error -v=$GIT_UTILS_DEBUG "Unsupported provider: $provider"; return 1 ;;
     esac
 
 }
@@ -132,14 +191,14 @@ _gituser() {
     case "$provider" in
         github)
             [[ -n "$GITHUB_USER" ]] && { echo "$GITHUB_USER"; return 0; }
-            zshlog --error "GITHUB_USER not set" && return 1
+            zshlog --error -v=$GIT_UTILS_DEBUG "GITHUB_USER not set" && return 1
             ;;
         gitlab)
             [[ -n "$GITLAB_USER" ]] && { echo "$GITLAB_USER"; return 0; }
-            [[ -n "$GITHUB_USER" ]] && { zshlog --warn "GITLAB_USER not set, using GITHUB_USER"; echo "$GITHUB_USER"; return 0; }
-            zshlog --error "GITLAB_USER not set" && return 1
+            [[ -n "$GITHUB_USER" ]] && { zshlog --warn -v=$GIT_UTILS_DEBUG "GITLAB_USER not set, using GITHUB_USER"; echo "$GITHUB_USER"; return 0; }
+            zshlog --error -v=$GIT_UTILS_DEBUG "GITLAB_USER not set" && return 1
             ;;
-        *) zshlog --error "Unsupported provider: $provider"; return 1 ;;
+        *) zshlog --error -v=$GIT_UTILS_DEBUG "Unsupported provider: $provider"; return 1 ;;
     esac
 
 }
@@ -174,7 +233,7 @@ _gsensitive() {
     # Enable NULL_GLOB and GLOB_DOTS to match hidden files
     setopt local_options null_glob glob_dots
 
-    zshlog --info -v "🔍 Checking for sensitive files in ${(q)dir/#$HOME/~}..."
+    zshlog --info -v=$GIT_UTILS_DEBUG "🔍 Checking for sensitive files in ${(q)dir/#$HOME/~}..."
 
     for pattern in "${sensitive_patterns[@]}"; do
         # Use array expansion to check for matches
@@ -203,26 +262,26 @@ gitcrypt() {
 
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    [[ $# -eq 0 ]] && { zshlog --error -v "No paths given"; return 1; }
+    [[ $# -eq 0 ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "No paths given"; return 1; }
     [[ ! -f .gitcrypt ]] && touch .gitcrypt
 
     if [[ "$folder_mode" == true ]]; then
         for item in "$@"; do
             local pattern="**/${(q)item}/**"
             echo "$pattern" >> .gitcrypt
-            zshlog --info "Added folder pattern '$pattern' to .gitcrypt"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Added folder pattern '$pattern' to .gitcrypt"
         done
     else
         for item in "$@"; do
             local pattern="${(q)item}"
             echo "$pattern" >> .gitcrypt
-            zshlog --info "Added file '$pattern' to .gitcrypt"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Added file '$pattern' to .gitcrypt"
         done
     fi
 
     echo "" >> .gitcrypt
     sort -u .gitcrypt -o .gitcrypt
-    zshlog --info -v "✅ .gitcrypt updated (deduplicated)" ; cat .gitcrypt
+    zshlog --info -v=$GIT_UTILS_DEBUG "✅ .gitcrypt updated (deduplicated)" ; cat .gitcrypt
 
 }
 
@@ -250,25 +309,25 @@ gencrypt_setup() {
         __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
         # Check if in git repo and git-crypt installed
-        git rev-parse --is-inside-work-tree &>/dev/null || { zshlog --error "Not a git repo or not in one: ${dir/#$HOME/~}"; return 1; }
-        command -v git-crypt &>/dev/null || { zshlog --warn "git-crypt not installed. Run: brew install git-crypt"; return 1; }
+        git rev-parse --is-inside-work-tree &>/dev/null || { zshlog --error -v=$GIT_UTILS_DEBUG "Not a git repo or not in one: ${dir/#$HOME/~}"; return 1; }
+        command -v git-crypt &>/dev/null || { zshlog --warn -v=$GIT_UTILS_DEBUG "git-crypt not installed. Run: brew install git-crypt"; return 1; }
 
         # 💣 Force re-init mode
         if [[ "$force" == "true" ]]; then
-            zshlog --warn "⚠️  Force mode enabled — removing existing git-crypt data"
+            zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Force mode enabled — removing existing git-crypt data"
             rm -rf .git/git-crypt .gitattributes.backup 2>/dev/null
             git rm --cached .gitattributes 2>/dev/null || true
-            git-crypt init && zshlog --info "✅ git-crypt reinitialised (force)" || { zshlog --error "Failed to reinitialise"; return 1; }
+            git-crypt init && zshlog --info -v=$GIT_UTILS_DEBUG "✅ git-crypt reinitialised (force)" || { zshlog --error -v=$GIT_UTILS_DEBUG "Failed to reinitialise"; return 1; }
         else
             # Normal mode: skip if already initialized otherwise initialize if not fails
-            git-crypt status &>/dev/null && zshlog --info "Detected git-crypt setup, skipping init" || {
-                git-crypt init && zshlog --info "✅ git-crypt initialised" || {
-                    zshlog --error "Failed to init"; return 1;
+            git-crypt status &>/dev/null && zshlog --info -v=$GIT_UTILS_DEBUG "Detected git-crypt setup, skipping init" || {
+                git-crypt init && zshlog --info -v=$GIT_UTILS_DEBUG "✅ git-crypt initialised" || {
+                    zshlog --error -v=$GIT_UTILS_DEBUG "Failed to init"; return 1;
                 };
             }
         fi
 
-        [[ "$auto" == "true" ]] && { _gsensitive "$dir" && zshlog --info "Sensitive files found, updating patterns..." || zshlog --info "No sensitive files found, updating anyway."; }
+        [[ "$auto" == "true" ]] && { _gsensitive "$dir" && zshlog --info -v=$GIT_UTILS_DEBUG "Sensitive files found, updating patterns..." || zshlog --info -v=$GIT_UTILS_DEBUG "No sensitive files found, updating anyway."; }
 
         # Default patterns
         local default_patterns=(
@@ -298,19 +357,19 @@ gencrypt_setup() {
         local all_patterns=("${default_patterns[@]}" "${custom_patterns[@]}")
 
         # Backup or create .gitattributes
-        [[ -f .gitattributes ]] && { cp .gitattributes .gitattributes.backup && zshlog --info "Backed up existing .gitattributes"; } || { echo "# git-crypt encryption patterns" > .gitattributes && zshlog --info "Created .gitattributes"; }
+        [[ -f .gitattributes ]] && { cp .gitattributes .gitattributes.backup && zshlog --info -v=$GIT_UTILS_DEBUG "Backed up existing .gitattributes"; } || { echo "# git-crypt encryption patterns" > .gitattributes && zshlog --info -v=$GIT_UTILS_DEBUG "Created .gitattributes"; }
 
         # Add missing patterns
         local added=0; for p in "${all_patterns[@]}"; do grep -qxF "$p filter=git-crypt diff=git-crypt" .gitattributes || { echo "$p filter=git-crypt diff=git-crypt" >> .gitattributes; ((added++)); }; done
-        zshlog --info "✅ Added $added patterns to .gitattributes"
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Added $added patterns to .gitattributes"
 
         # Stage .gitattributes for commit
-        git add .gitattributes && zshlog --info "Staged .gitattributes"
+        git add .gitattributes && zshlog --info -v=$GIT_UTILS_DEBUG "Staged .gitattributes"
 
         # Attempt pre-commit hook installation
-        gshook "$dir" 2>/dev/null || zshlog --warn "Skipped hook install"
+        gshook "$dir" 2>/dev/null || zshlog --warn -v=$GIT_UTILS_DEBUG "Skipped hook install"
 
-        zshlog --info "✅ git-crypt setup complete${force:+ (forced)}"
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ git-crypt setup complete${force:+ (forced)}"
 
     )
 }
@@ -327,9 +386,9 @@ gencrypt_check() {
 
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    ! command -v git-crypt &>/dev/null && { zshlog --error -v "git-crypt not installed"; return 1; }
-    [[ ! -f .git/git-crypt/keys/default ]] && { zshlog --error -v "git-crypt not initialised in this repo"; return 1; }
-    git-crypt status "$file" &>/dev/null && zshlog --info -v "File: $file - Encrypted ✓" || { zshlog --warn -v "File: $file - Not encrypted"; return 1; }
+    ! command -v git-crypt &>/dev/null && { zshlog --error -v=$GIT_UTILS_DEBUG "git-crypt not installed"; return 1; }
+    [[ ! -f .git/git-crypt/keys/default ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "git-crypt not initialised in this repo"; return 1; }
+    git-crypt status "$file" &>/dev/null && zshlog --info -v=$GIT_UTILS_DEBUG "File: $file - Encrypted ✓" || { zshlog --warn -v=$GIT_UTILS_DEBUG "File: $file - Not encrypted"; return 1; }
 
 }
 
@@ -348,7 +407,7 @@ gsecrets() {
 
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    zshlog --info -v "🔍 Scanning for potential secrets in ${dir/#$HOME/~}..."
+    zshlog --info -v=$GIT_UTILS_DEBUG "🔍 Scanning for potential secrets in ${dir/#$HOME/~}..."
 
     local secret_patterns=(
         "password.*=.*"
@@ -366,17 +425,31 @@ gsecrets() {
         while IFS= read -r match; do
             found=1
             echo "⚠️  Potential secret found: $match"
-            zshlog --warn "Potential secret detected: $match"
+            zshlog --warn -v=$GIT_UTILS_DEBUG "Potential secret detected: $match"
         done < <(git grep -i -n -E "$pattern" 2>/dev/null | head -20)
     done
 
-    [[ $found -eq 0 ]] && zshlog --info -v "✅ No obvious secrets detected" || { echo ""; zshlog --warn -v "⚠️  Review these files and ensure sensitive data is encrypted!"; }
+    [[ $found -eq 0 ]] && zshlog --info -v=$GIT_UTILS_DEBUG "✅ No obvious secrets detected" || { echo ""; zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Review these files and ensure sensitive data is encrypted!"; }
 
     return $found
 
 }
 
 # 🔐 Install pre-commit hook for secret scanning
+#
+# Purpose:      gshook sets up a pre-commit hook that scans staged files for potential secrets using regex patterns.
+#               It integrates with git-crypt by warning about unencrypted sensitive files and blocks commits if potential secrets are detected,
+#               encouraging secure handling of sensitive data.
+#
+# Operates on:  the current git repository, modifying .git/hooks/pre-commit.
+#               It checks for existing hooks to avoid overwriting and appends if necessary.
+#               The hook scans for patterns like passwords, API keys, tokens, and private keys in staged files before allowing commits.
+#
+# works on:     git repositories, modifies .git/hooks/pre-commit, checks staged files for secrets,
+#               integrates with git-crypt patterns, and provides warnings and commit blocking for potential secrets.
+#
+# Usage: gshook [dir=.]
+# Example: gshook .
 gshook() {
     [[ "$1" == (-h|--help) ]] && {
         echo "\n🪝 Usage: gshook [dir=.]\n"
@@ -390,7 +463,7 @@ gshook() {
     (
         cd "$dir" || return 1
 
-        [[ ! -d .git ]] && { zshlog --error -v "Not a git repository: ${dir/#$HOME/~}"; return 1; }
+        [[ ! -d .git ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "Not a git repository: ${dir/#$HOME/~}"; return 1; }
 
         local hook_file=".git/hooks/pre-commit"
 
@@ -399,14 +472,14 @@ gshook() {
         # Check if hook already exists
         if [[ -f "$hook_file" ]]; then
             if grep -q "Secret scanning via git-crypt" "$hook_file" 2>/dev/null; then
-                zshlog --info "Secret scanning hook already installed"
+                zshlog --info -v=$GIT_UTILS_DEBUG "Secret scanning hook already installed"
                 return 0
             fi
             # If other hook exists, append silently (non-destructive)
-            zshlog --info "Appending secret scanning to existing pre-commit hook"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Appending secret scanning to existing pre-commit hook"
         fi
 
-        zshlog --info -v "Installing pre-commit secret scanning hook..."
+        zshlog --info -v=$GIT_UTILS_DEBUG "Installing pre-commit secret scanning hook..."
 
         # Create or append to hook
         cat >> "$hook_file" <<'HOOK_EOF'
@@ -463,9 +536,9 @@ echo "✅ No secrets detected"
 HOOK_EOF
 
         chmod +x "$hook_file"
-        zshlog --info -v "✅ Secret scanning pre-commit hook installed"
-        zshlog --info "Hook will scan for secrets before each commit"
-        zshlog --info "To bypass: git commit --no-verify (not recommended)"
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Secret scanning pre-commit hook installed"
+        zshlog --info -v=$GIT_UTILS_DEBUG "Hook will scan for secrets before each commit"
+        zshlog --info -v=$GIT_UTILS_DEBUG "To bypass: git commit --no-verify (not recommended)"
 
     )
 }
@@ -476,22 +549,22 @@ _gisolate() {
     (
         __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-        zshlog --info "Entering git repo locally for isolating: ${(q)dir}"
-        cd "$dir" || { zshlog --error "❌  Directory not found or in-accessible!"; return 1;}
+        zshlog --info -v=$GIT_UTILS_DEBUG "Entering git repo locally for isolating: ${(q)dir}"
+        cd "$dir" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌  Directory not found or in-accessible!"; return 1;}
 
         if ! git rev-parse --is-inside-work-tree &>/dev/null; then
-            zshlog --warn "⚠️  Initializing isolated git repo in $dir..."
+            zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Initializing isolated git repo in $dir..."
             git init || return 1
             git branch -M main || return 1
         fi
 
         local changed=0
         [[ ! -f .gitignore ]] && {
-            zshlog --info "Creating .gitignore to isolate repo ${(q)dir}"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Creating .gitignore to isolate repo ${(q)dir}"
             echo "*" > .gitignore;
             echo "!.gitignore" >> .gitignore; changed=1;
         } || {
-            zshlog --info "Updating existing .gitignore to isolate repo ${(q)dir}"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Updating existing .gitignore to isolate repo ${(q)dir}"
             grep -qxF "*" .gitignore || { echo "*" >> .gitignore; changed=1; };
             grep -qxF "!.gitignore" .gitignore || { echo "!.gitignore" >> .gitignore; changed=1; };
         }
@@ -499,7 +572,7 @@ _gisolate() {
         [[ $changed -eq 1 ]] && {
             git add .gitignore;
             git commit -m "Update .gitignore to isolate repo";
-            zshlog --info "✅ .gitignore updated to isolate repo";
+            zshlog --info -v=$GIT_UTILS_DEBUG "✅ .gitignore updated to isolate repo";
         }
 
     )
@@ -515,11 +588,11 @@ _gsubmod() {
   (
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    cd "$dir" || { zshlog --error "❌  Directory not found or in-accessible!" ; return 1; }
-    ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v "❌ Not a git repo: ${dir/#$HOME/~}"; return 1; }
+    cd "$dir" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌  Directory not found or in-accessible!" ; return 1; }
+    ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Not a git repo: ${dir/#$HOME/~}"; return 1; }
 
     # Try to add files (non-fatal if fails - might already be staged)
-    git add . 2>/dev/null && zshlog --info "Files added." || zshlog --info "Files already staged or nothing new to add."
+    git add . 2>/dev/null && zshlog --info -v=$GIT_UTILS_DEBUG "Files added." || zshlog --info -v=$GIT_UTILS_DEBUG "Files already staged or nothing new to add."
 
     # Check if there are any changes to commit (staged, unstaged, or untracked)
     local has_staged="$(git diff --cached --name-only)"
@@ -528,30 +601,30 @@ _gsubmod() {
 
     if [[ -n "$has_staged" ]] || [[ -n "$has_unstaged" ]] || [[ -n "$has_untracked" ]]; then
         if ! git commit -m "$msg"; then
-            zshlog --error -v "❌ Failed to commit."
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to commit."
             return 1
         fi
-        zshlog --info "Commit: $msg"
+        zshlog --info -v=$GIT_UTILS_DEBUG "Commit: $msg"
 
         # Check for dirty submodules before pushing
         if git submodule status 2>/dev/null | grep -q '^[+]'; then
-            zshlog --error -v "❌ Cannot push: submodules have uncommitted changes"
-            zshlog --info "💡 Fix: cd into each submodule and run '_gsubmod <msg>'"
-            zshlog --info "Dirty submodules:"
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Cannot push: submodules have uncommitted changes"
+            zshlog --info -v=$GIT_UTILS_DEBUG "💡 Fix: cd into each submodule and run '_gsubmod <msg>'"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Dirty submodules:"
             git submodule status | grep '^[+]' | awk '{print "   - " $2}'
             return 1
         fi
 
         if ! git push; then
-            zshlog --error -v "❌ Failed to push."
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to push."
             return 1
         fi
-        zshlog --info -v "✅ Submodule updated in ${dir/#$HOME/~}"
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Submodule updated in ${dir/#$HOME/~}"
     elif git rev-parse HEAD >/dev/null 2>&1; then
-        zshlog --info "No changes to commit. Attempting to push existing commits..."
-        git push || zshlog --warn -v "⚠️  No changes to push in: ${dir/#$HOME/~}"
+        zshlog --info -v=$GIT_UTILS_DEBUG "No changes to commit. Attempting to push existing commits..."
+        git push || zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  No changes to push in: ${dir/#$HOME/~}"
     else
-        zshlog --info -v "✅ Submodule already complete. Nothing further to do."
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Submodule already complete. Nothing further to do."
         return 0
     fi
 
@@ -568,11 +641,11 @@ _gparent() {
   (
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    cd "$dir" || { zshlog --error "❌  Directory not found or in-accessible!" ; return 1; }
-    ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v "❌ Not a git repo: ${dir/#$HOME/~}"; return 1; }
+    cd "$dir" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌  Directory not found or in-accessible!" ; return 1; }
+    ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Not a git repo: ${dir/#$HOME/~}"; return 1; }
 
     # Try to add files (non-fatal if fails - might already be staged)
-    git add . 2>/dev/null && zshlog --info "Submodule pointers added." || zshlog --info "Submodule pointers already staged or nothing new to add."
+    git add . 2>/dev/null && zshlog --info -v=$GIT_UTILS_DEBUG "Submodule pointers added." || zshlog --info -v=$GIT_UTILS_DEBUG "Submodule pointers already staged or nothing new to add."
 
     # Check if there are any changes to commit (staged, unstaged, or untracked)
     local has_staged="$(git diff --cached --name-only)"
@@ -581,37 +654,58 @@ _gparent() {
 
     if [[ -n "$has_staged" ]] || [[ -n "$has_unstaged" ]] || [[ -n "$has_untracked" ]]; then
         if ! git commit -m "$msg"; then
-            zshlog --error -v "❌ Failed to commit."
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to commit."
             return 1
         fi
-        zshlog --info "Commit: $msg"
+        zshlog --info -v=$GIT_UTILS_DEBUG "Commit: $msg"
 
         # Check for dirty submodules before pushing
         if git submodule status 2>/dev/null | grep -q '^[+]'; then
-            zshlog --error -v "❌ Cannot push: submodules have uncommitted changes"
-            zshlog --info -v "💡 Fix: cd into each submodule and run '_gsubmod <msg>'"
-            zshlog --info -v "Dirty submodules:"
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Cannot push: submodules have uncommitted changes"
+            zshlog --info -v=$GIT_UTILS_DEBUG "💡 Fix: cd into each submodule and run '_gsubmod <msg>'"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Dirty submodules:"
             git submodule status | grep '^[+]' | awk '{print "   - " $2}'
             return 1
         fi
 
         if ! git push; then
-            zshlog --error -v "❌ Failed to push."
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to push."
             return 1
         fi
-        zshlog --info -v "✅ Parent repo updated with submodule pointers in ${dir/#$HOME/~}"
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Parent repo updated with submodule pointers in ${dir/#$HOME/~}"
     elif git rev-parse HEAD >/dev/null 2>&1; then
-        zshlog --info -v "No changes to submodule pointers. Attempting to push existing commits..."
-        git push || zshlog --warn -v "⚠️  No changes to push in: ${dir/#$HOME/~}"
+        zshlog --info -v=$GIT_UTILS_DEBUG "No changes to submodule pointers. Attempting to push existing commits..."
+        git push || zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  No changes to push in: ${dir/#$HOME/~}"
     else
-        zshlog --info -v "✅ Parent repo already complete. Nothing further to do."
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Parent repo already complete. Nothing further to do."
         return 0
     fi
 
   )
 }
 
+# Push to all configured remotes
+git-push-all() {
+    local branch="$$   {1:-   $$(git rev-parse --abbrev-ref HEAD)}"
+    local remotes=($$   (git remote | grep -E '^(origin|github|gitlab|bitbucket)   $$'))
+
+    [[ ${#remotes[@]} -eq 0 ]] && { echo "No known remotes found."; return 1; }
+
+    for remote in "${remotes[@]}"; do
+        print -P "%F{cyan}→ Pushing to $$   {remote}/   $${branch}%f"
+        git push "$$   {remote}" "   $${branch}" || {
+            print -P "%F{yellow}Push to ${remote} failed – skipping%f"
+        }
+    done
+
+    print -P "%F{green}Push to all remotes completed.%f"
+}
+
+# Optional: alias
+# alias gpa='git-push-all'
+
 # ---
+# Purpose: Main function to initialize and push a local directory to a new Git repository on GitHub/GitLab, with optional encryption setup.
 # Usage: grepo [commit_msg] [optional_path]
 # Example: grepo "Initial commit" "repo-stuff/my-new-repo/"
 
@@ -632,38 +726,38 @@ grepo() (
     # User validation
     echo "ℹ️  Running: grepo <$repo_name> \"$commit_msg\" → ${dir/#$HOME/~} [$provider]"
     read -r "?❓ Proceed? [y/N] " reply
-    [[ ! "$reply" =~ ^[Yy]$ ]] && { zshlog --warn "🚫 Aborted by user"; return 1; }
+    [[ ! "$reply" =~ ^[Yy]$ ]] && { zshlog --warn -v=$GIT_UTILS_DEBUG "🚫 Aborted by user"; return 1; }
 
     echo "📦 Repository: $user/$repo_name"
     read -r "?❓ Proceed? [y/N] " reply
-    [[ ! "$reply" =~ ^[Yy]$ ]] && { zshlog --warn "🚫 Repo name rejected"; return 1; }
+    [[ ! "$reply" =~ ^[Yy]$ ]] && { zshlog --warn -v=$GIT_UTILS_DEBUG "🚫 Repo name rejected"; return 1; }
 
     # Initialize git repo if needed
     git rev-parse --is-inside-work-tree &>/dev/null || {
-        zshlog --info -v "⚠️  Initializing git repo in ${dir/#$HOME/~}..."; git init &&
-        zshlog --info -v "✅  Git repo initialized." &&
+        zshlog --info -v=$GIT_UTILS_DEBUG "⚠️  Initializing git repo in ${dir/#$HOME/~}..."; git init &&
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅  Git repo initialized." &&
         git branch -M main || {
-            zshlog --error -v "❌  Failed to initialize git repo."; return 1;
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌  Failed to initialize git repo."; return 1;
         };
     }
 
     # Auto-setup encryption if sensitive files detected
     gencrypt_setup "$dir" true || {
-        zshlog --warn "⚠️  Encryption setup failed or skipped ⁉️ "
+        zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Encryption setup failed or skipped ⁉️ "
     }
 
     # Check and set remote using helper function
     local remote_url=$(_gurl "$user" "$repo_name" "$provider") || return 1
-    git remote get-url origin &>/dev/null && { local current_remote=$(git remote get-url origin); [[ "$current_remote" != "$remote_url" ]] && { git remote set-url origin "$remote_url" || { zshlog --error -v "❌ Failed to update remote"; return 1; }; }; zshlog --info -v "⚠️  Remote 'origin' → $current_remote"; } || { git remote add origin "$remote_url" || { zshlog --error -v "❌ Failed to set remote"; return 1; }; zshlog --info -v "✅ Remote 'origin' → $remote_url"; }
+    git remote get-url origin &>/dev/null && { local current_remote=$(git remote get-url origin); [[ "$current_remote" != "$remote_url" ]] && { git remote set-url origin "$remote_url" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to update remote"; return 1; }; }; zshlog --info -v=$GIT_UTILS_DEBUG "⚠️  Remote 'origin' → $current_remote"; } || { git remote add origin "$remote_url" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to set remote"; return 1; }; zshlog --info -v=$GIT_UTILS_DEBUG "✅ Remote 'origin' → $remote_url"; }
 
     # Prevent parent → child repo contamination
     _gisolate "$dir"
 
     # Add and commit files
-    zshlog --info -v "💫 Adding files from ${dir/#$HOME/~} to $repo_name.git..."
+    zshlog --info -v=$GIT_UTILS_DEBUG "💫 Adding files from ${dir/#$HOME/~} to $repo_name.git..."
 
     # Try to add files (non-fatal if fails - might already be staged)
-    git add . 2>/dev/null && zshlog --info "Files added." || zshlog --info "Files already staged or nothing new to add."
+    git add . 2>/dev/null && zshlog --info -v=$GIT_UTILS_DEBUG "Files added." || zshlog --info -v=$GIT_UTILS_DEBUG "Files already staged or nothing new to add."
 
     # Check if there are any changes to commit (staged, unstaged, or untracked)
     local has_staged="$(git diff --cached --name-only)"
@@ -672,71 +766,71 @@ grepo() (
 
     if [[ -n "$has_staged" ]] || [[ -n "$has_unstaged" ]] || [[ -n "$has_untracked" ]]; then
         if ! git commit -m "$commit_msg"; then
-            zshlog --error -v "❌ Failed to commit."
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to commit."
             return 1
         fi
-        zshlog --info "Commit: $commit_msg"
+        zshlog --info -v=$GIT_UTILS_DEBUG "Commit: $commit_msg"
     elif git rev-parse HEAD >/dev/null 2>&1; then
-        zshlog --info "No changes to commit. Proceeding with existing commits..."
+        zshlog --info -v=$GIT_UTILS_DEBUG "No changes to commit. Proceeding with existing commits..."
     else
-        zshlog --info -v "✅ Local repo already complete. Nothing further to do."
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Local repo already complete. Nothing further to do."
         return 0
     fi
 
-    # Check if remote already has commits
-    if [[ -n "$(git ls-remote origin HEAD 2>/dev/null)" ]]; then
-        zshlog --info -v "⚠️  Remote has commits. Attempting to merge..."
+    # Ensure branch is up-to-date before pushing
+    if git ls-remote --exit-code origin "$current_branch" &>/dev/null; then
+        zshlog --info -v=$GIT_UTILS_DEBUG "🔄 Syncing with remote ($current_branch)..."
 
-        # Try regular pull first
-        if ! git pull --no-rebase origin "$current_branch" 2>/dev/null; then
-            # If that fails, try with --allow-unrelated-histories
-            if ! git pull --no-rebase --allow-unrelated-histories origin "$current_branch"; then
-                zshlog --error -v "❌ Failed to pull from remote."
-                return 1
-            fi
+        if ! git fetch origin "$current_branch"; then
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to fetch remote branch"
+            return 1
         fi
 
-        # Check for merge conflicts
-        if ! git diff --check &>/dev/null || [[ -n "$(git ls-files -u)" ]]; then
-            zshlog --warn -v "⚠️  Merge conflicts detected. Resolving automatically..."
+        # Refuse dirty rebase environments
+        if [[ -n "$(git status --porcelain)" ]]; then
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Working tree not clean. Commit or stash first."
+            return 1
+        fi
 
-            # Auto-resolve: keep local versions (--ours)
-            git checkout --ours . 2>/dev/null
-            git add -A
-            git commit --no-edit 2>/dev/null || git commit -m "Merge remote with local changes (keeping local)" 2>/dev/null
-
-            zshlog --info -v "✅ Conflicts auto-resolved (kept local versions)"
+        # If local is behind, rebase
+        if ! git merge-base --is-ancestor "origin/$current_branch" HEAD; then
+            if ! git rebase "origin/$current_branch"; then
+                zshlog --error -v=$GIT_UTILS_DEBUG "❌ Rebase failed. Resolve manually."
+                return 1
+            fi
+            zshlog --info -v=$GIT_UTILS_DEBUG "✅ Rebased onto remote"
         fi
     fi
 
     # Push to remote
     git push -u origin "$current_branch" || {
-        zshlog --warn -v "⁉️  Push failed for '$user/$repo_name'. Checking remote repo..."
+        zshlog --warn -v=$GIT_UTILS_DEBUG "⁉️  Push failed for '$user/$repo_name'. Checking remote repo..."
         local cli_check=$(_gitcli "repo view $user/$repo_name" "$provider") || return 1
         local cli_create=$(_gitcli "repo create $user/$repo_name --public" "$provider") || return 1
 
         eval "$cli_check" &>/dev/null || {
-            zshlog --info -v "📡 Creating repo $user/$repo_name on $provider..."
+            zshlog --info -v=$GIT_UTILS_DEBUG "📡 Creating repo $user/$repo_name on $provider..."
             eval "$cli_create" && {
-                zshlog --info -v "✅ Repo created"
-                git push -u origin "$current_branch" || { zshlog --error -v "❌ Push failed after repo creation"; return 1; }
-            } || { zshlog --error -v "❌ Failed to create repo"; return 1; }
-        } || { zshlog --error -v "❌ Push failed for unknown reasons"; return 1; }
+                zshlog --info -v=$GIT_UTILS_DEBUG "✅ Repo created"
+                git push -u origin "$current_branch" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Push failed after repo creation"; return 1; }
+            } || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to create repo"; return 1; }
+        } || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Push failed for unknown reasons"; return 1; }
     }
 
-    zshlog --info -v "✅ Successfully pushed to $user/$repo_name"
+    zshlog --info -v=$GIT_UTILS_DEBUG "✅ Successfully pushed to $user/$repo_name"
 
     # Update parent repo if it's a git repo
     parent_dir=$(git rev-parse --show-toplevel 2>/dev/null || true)
     if [[ -n "$parent_dir" && -d "$parent_dir/.git" ]]; then
         (cd "$parent_dir" && _gparent "Update submodule pointer: $repo_name")
     else
-        zshlog --warn -v "⚠️  Skipping parent module update — not in a Git repo."
+        zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Skipping parent module update — not in a Git repo."
     fi
 
 )
 
 # 🧩 Git utility for submodules
+# Purpose: Initialize and push a local directory as a new Git repository, then update the parent repository to point to it as a submodule.
 # Usage: gsub <folder> [commit_msg] [repo_name]
 # Example: gsub "repo-stuff/my-new-repo/" "Adding submodule - repo-stuff/my-new-repo/"
 
@@ -751,11 +845,11 @@ gsub() (
 
     # Get provider info
     local provider=$(_githost)
-    local user=$(_gituser "$provider") || { zshlog --error "❌  User ${(q)user}\@${(q)provider} not found!" ; return 1; }
+    local user=$(_gituser "$provider") || { zshlog --error -v=$GIT_UTILS_DEBUG "❌  User ${(q)user}\@${(q)provider} not found!" ; return 1; }
 
     # --- Submodule (child) repo logic ---
     (
-        cd "$subdir" || { zshlog --error "❌ Could not cd into ${(q)subdir}"; exit 1; }
+        cd "$subdir" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Could not cd into ${(q)subdir}"; exit 1; }
 
         # Generate repo name using helper function
         local repo_name=$(_grepo_name "$PWD" "$custom_repo") || exit 1
@@ -763,15 +857,15 @@ gsub() (
 
         # If not a repo, initialize
         ! git rev-parse --is-inside-work-tree &>/dev/null && {
-            zshlog --info -v "⚠️  Initialising git repo in $PWD..." && git init && git branch -M main && zshlog --info -v "✅ Git initialized"
-            zshlog --info -v "📦 Suggested repo name: $repo_name [$provider]"
+            zshlog --info -v=$GIT_UTILS_DEBUG "⚠️  Initialising git repo in $PWD..." && git init && git branch -M main && zshlog --info -v=$GIT_UTILS_DEBUG "✅ Git initialized"
+            zshlog --info -v=$GIT_UTILS_DEBUG "📦 Suggested repo name: $repo_name [$provider]"
             read -r "❓ Proceed with this repo name? [y/N] " reply
 
-            [[ "$reply" != [Yy]* ]] && { zshlog --warn "🚫 Aborted by user"; exit 1; }
+            [[ "$reply" != [Yy]* ]] && { zshlog --warn -v=$GIT_UTILS_DEBUG "🚫 Aborted by user"; exit 1; }
 
-            git remote add origin "$remote_url" &&  zshlog --info -v "🔧 Remote → $remote_url" || { zshlog --error -v "❌ Failed to add remote"; exit 1; }
+            git remote add origin "$remote_url" &&  zshlog --info -v=$GIT_UTILS_DEBUG "🔧 Remote → $remote_url" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to add remote"; exit 1; }
 
-            gencrypt_setup "$PWD" true || zshlog --warn -v "❌ Encryption setup failed or skipped"
+            gencrypt_setup "$PWD" true || zshlog --warn -v=$GIT_UTILS_DEBUG "❌ Encryption setup failed or skipped"
         }
 
         # Prevent parent → child repo contamination
@@ -779,7 +873,7 @@ gsub() (
 
         # Add and commit submodule repo
         # Try to add files (non-fatal if fails - might already be staged)
-        git add . 2>/dev/null && zshlog --info "Files added." || zshlog --info "Files already staged or nothing new to add."
+        git add . 2>/dev/null && zshlog --info -v=$GIT_UTILS_DEBUG "Files added." || zshlog --info -v=$GIT_UTILS_DEBUG "Files already staged or nothing new to add."
 
         # Check if there are any changes to commit (staged, unstaged, or untracked)
         local has_staged="$(git diff --cached --name-only)"
@@ -788,33 +882,33 @@ gsub() (
 
         if [[ -n "$has_staged" ]] || [[ -n "$has_unstaged" ]] || [[ -n "$has_untracked" ]]; then
             if ! git commit -m "${commit_msg}"; then
-                zshlog --error -v "❌ Failed to commit."
+                zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to commit."
                 exit 1
             fi
-            zshlog --info "Commit: ${commit_msg}"
+            zshlog --info -v=$GIT_UTILS_DEBUG "Commit: ${commit_msg}"
         elif git rev-parse HEAD >/dev/null 2>&1; then
-            zshlog --info "No changes to commit. Proceeding with existing commits..."
+            zshlog --info -v=$GIT_UTILS_DEBUG "No changes to commit. Proceeding with existing commits..."
         else
-            zshlog --info -v "✅ Submodule repo already complete. Nothing further to do."
+            zshlog --info -v=$GIT_UTILS_DEBUG "✅ Submodule repo already complete. Nothing further to do."
             exit 0
         fi
 
         # Push submodule repo
         git push -u origin main || {
-            zshlog --warn "⚠️  Push failed. Trying to set upstream..."
+            zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Push failed. Trying to set upstream..."
             git branch --set-upstream-to=origin/main main 2>/dev/null || true
             git push || {
-                zshlog --warn "⚠️  Remote repository '$repo_name' not found on $provider"
+                zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Remote repository '$repo_name' not found on $provider"
                 local cli_check=$(_gitcli "repo view $user/$repo_name" "$provider") || exit 1
                 local cli_create=$(_gitcli "repo create $user/$repo_name --public" "$provider") || exit 1
 
                 if ! eval "$cli_check" &>/dev/null; then
-                    zshlog --info -v "📡 Creating repo via CLI..."
+                    zshlog --info -v=$GIT_UTILS_DEBUG "📡 Creating repo via CLI..."
                     if eval "$cli_create"; then
-                        zshlog --info -v "✅ Repo created"
+                        zshlog --info -v=$GIT_UTILS_DEBUG "✅ Repo created"
                         git push --set-upstream origin main
                     else
-                        zshlog --error "❌ Failed to create remote repository"
+                        zshlog --error -v=$GIT_UTILS_DEBUG "❌ Failed to create remote repository"
                         exit 1
                     fi
                 fi
@@ -824,28 +918,28 @@ gsub() (
 
     # --- Parent repo logic ---
     (
-        cd "$(dirname "$subdir")" || { zshlog --error "❌ Could not cd to parent of $subdir"; exit 1; }
+        cd "$(dirname "$subdir")" || { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Could not cd to parent of $subdir"; exit 1; }
 
         # Generate parent repo name
         local parent_repo_name=$(_grepo_name "$PWD") || exit 1
         local parent_remote_url=$(_gurl "$user" "$parent_repo_name" "$provider") || exit 1
 
         # Safety: Only proceed if parent is already a git repo
-        ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error "❌ Parent '$PWD' is not a git repo. Aborting submodule add"; exit 1; }
+        ! git rev-parse --is-inside-work-tree &>/dev/null && { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Parent '$PWD' is not a git repo. Aborting submodule add"; exit 1; }
 
-        zshlog --info -v "\n🔗 Adding submodule: $subdir\n"
+        zshlog --info -v=$GIT_UTILS_DEBUG "\n🔗 Adding submodule: $subdir\n"
 
         # Add submodule and commit .gitmodules change
         local child_repo_name=$(_grepo_name "$(cd "$subdir" && pwd)") || exit 1
         local child_remote_url=$(_gurl "$user" "$child_repo_name" "$provider") || exit 1
 
         git submodule add "$child_remote_url" "$subdir"
-        [[ -n "$(git status --porcelain .gitmodules 2>/dev/null)" ]] && { git add .gitmodules "$subdir"; git commit -m "${commit_msg} submodule - $subdir"; git push && zshlog --info -v "✅ Submodule added and parent pushed" && exit 0; } || zshlog --warn "⚠️  No changes to .gitmodules detected"
+        [[ -n "$(git status --porcelain .gitmodules 2>/dev/null)" ]] && { git add .gitmodules "$subdir"; git commit -m "${commit_msg} submodule - $subdir"; git push && zshlog --info -v=$GIT_UTILS_DEBUG "✅ Submodule added and parent pushed" && exit 0; } || zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  No changes to .gitmodules detected"
     )
 
 )
 
-# 🌀 gsub-all: Auto-init + add all folders in current dir as submodules
+# 🌀 gsub-all: Auto-init + add all folders in current dir as submodules except the ones in .gsubignore !
 gsub-all() {
     (
         local usage="\n\t⚠️  Usage: gsub-all [-L N|--level=N] [--debug] <commit-message>\n"
@@ -869,7 +963,7 @@ gsub-all() {
                 --level=*)      level="${1#*=}";                shift ;;
                 --debug)        debug=1;                        shift ;;
                 -h|--help)      echo "$usage";                  return 0 ;;
-                -*)             zshlog --warn -v "❌ Unknown option: ${(q)1}";   return 1 ;;
+                -*)             zshlog --warn -v=$GIT_UTILS_DEBUG "❌ Unknown option: ${(q)1}";   return 1 ;;
                 *)              msg="$1";                       shift ;;
             esac
         done
@@ -878,7 +972,7 @@ gsub-all() {
         [[ -z "$msg" ]] && echo "$usage" && return 1
 
         # Enable debug mode if requested
-        [[ $debug -eq 1 ]] && set -x
+        # [[ $debug -eq 1 ]] && set -x
 
         # Default ignores
         ignore_list+=("logs" "plugins" "__pycache__" "node_modules" ".DS_Store" ".git" ".idea" ".vscode")
@@ -886,14 +980,10 @@ gsub-all() {
         # Load from .gsubignore if exists
         if [[ -f "$ignore_file" ]]; then
             while IFS= read -r line; do
-                # Strip comments and trim whitespace
-                line="${line%%\#*}"
-                # Trim leading whitespace
-                line="${line#"${line%%[![:space:]]*}"}"
-                # Trim trailing whitespace
-                line="${line%"${line##*[![:space:]]}"}"
-                # Remove trailing slash if present
-                line="${line%/}"
+                line="${line%%\#*}"                             # Strip comments and trim whitespace
+                line="${line#"${line%%[![:space:]]*}"}"         # Trim leading whitespace
+                line="${line%"${line##*[![:space:]]}"}"         # Trim trailing whitespace
+                line="${line%/}"                                # Remove trailing slash if present
                 [[ -z "$line" ]] && continue
                 ignore_list+=("$line")
             done < "$ignore_file"
@@ -951,6 +1041,7 @@ gsub-all() {
 
 }
 
+# 🧩 gunsub: Remove a git submodule cleanly
 # Usage: gunsub <submodule-path>
 # Example:
 # > cd ~/.config
@@ -964,9 +1055,9 @@ gunsub() {
 
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    [[ ! -d "$path" ]] && { zshlog --error -v "❌ No such submodule directory: $path"; return 1; }
+    [[ ! -d "$path" ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "❌ No such submodule directory: $path"; return 1; }
 
-    zshlog --warn -v "⚠️  This will completely remove the submodule: $path"
+    zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  This will completely remove the submodule: $path"
     read -r " Proceed? [y/N]: " REPLY
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { echo "❎ Cancelled."; return 0; }
 
@@ -974,7 +1065,7 @@ gunsub() {
     git rm -f "$path" &&
     rm -rf ".git/modules/$name" &&
     git commit -m "Remove submodule: ${path#./}" &&
-    zshlog --info -v "✅ Submodule removed: $path"
+    zshlog --info -v=$GIT_UTILS_DEBUG "✅ Submodule removed: $path"
 
 }
 
@@ -1008,8 +1099,8 @@ _gsync-pull() {
 
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
-    zshlog --info -v "📥 Pulling submodule..." && git pull --rebase &&
-    zshlog --info -v "📤 Pulling parent repo..." && ( cd .. && git pull --rebase )
+    zshlog --info -v=$GIT_UTILS_DEBUG "📥 Pulling submodule..." && git pull --rebase &&
+    zshlog --info -v=$GIT_UTILS_DEBUG "📤 Pulling parent repo..." && ( cd .. && git pull --rebase )
 
 }
 
@@ -1036,20 +1127,19 @@ gsync-all() {
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
     local msg="${1:-Update all submodules and parent}"
-    zshlog --info -v "🔁 Running gsync-all with commit message: \"$msg\""
+    zshlog --info -v=$GIT_UTILS_DEBUG "🔁 Running gsync-all with commit message: \"$msg\""
 
     for dir in */.git; do
         local mod="${dir%/.git}"
-        zshlog --info -v "🔄 Syncing submodule: $mod"
-        (cd "$mod" && _gsubmod "$msg") || zshlog --error -v "⚠️ Failed: $mod"
+        zshlog --info -v=$GIT_UTILS_DEBUG "🔄 Syncing submodule: $mod"
+        (cd "$mod" && _gsubmod "$msg") || zshlog --error -v=$GIT_UTILS_DEBUG "⚠️ Failed: $mod"
     done
 
-    zshlog --info -v "🔼 Syncing parent repo..."
+    zshlog --info -v=$GIT_UTILS_DEBUG "🔼 Syncing parent repo..."
     _gparent "$msg"
 
 }
 
-# 🔧 gsub-genignore: Generate .gsubignore based on directory contents
 gsub-genignore() {
     [[ "$1" == (-h|--help) ]] && {
         echo "\n📂 Usage: gsub-genignore [target=.]\n"
@@ -1059,7 +1149,8 @@ gsub-genignore() {
     }
     local target="${1:-.}"
     local outfile="$target/.gsubignore"
-    local default_ignores=("logs" "node_modules" "__pycache__" ".venv" ".DS_Store" ".idea" ".vscode" "plugins" "lib" "docs" "bin" "dist" "build" "tmp" "temp" "cache" ".cache" ".git" "save" "saves" "backups" "backup" "env" "venv" "utils" "utility" "utilities" "scripts")
+    (( ${+GSUBIGNORE_DEFAULTS} )) || return 1
+    # local default_ignores=("logs" "node_modules" "__pycache__" ".venv" ".DS_Store" ".idea" ".vscode" "plugins" "lib" "docs" "bin" "dist" "build" "tmp" "temp" "cache" ".cache" ".git" "save" "saves" "backups" "backup" "env" "venv" "utils" "utility" "utilities" "scripts")
     local msg="# ---\n#   Please add all the folder's that are NOT git submodules\n#   OR do not want them to be a submodule. \
                 \n#   Alternatively, edit this file to add/remove folders\n#   that you do\/do not want to make a submodule!\n# ---\n \
                 \n# Auto-generated .gsubignore (Not SubModule Candidates)"
@@ -1074,7 +1165,7 @@ gsub-genignore() {
     if [[ -e "$outfile" ]]; then
         read -r "?⚠️  $outfile already exists. Overwrite? [y/N] " reply
         if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-            zshlog --warn -v "🚫 Skipped regeneration. Deduplicating existing file...\n"
+            zshlog --warn -v=$GIT_UTILS_DEBUG "🚫 Skipped regeneration. Deduplicating existing file...\n"
             regenerate=0
         fi
     fi
@@ -1083,14 +1174,15 @@ gsub-genignore() {
     if [[ $regenerate -eq 1 ]]; then
         echo "${msg}" > "$outfile"
 
-        zshlog --info -v "🛠️  Generating ${(q)outfile} with standard ignores..."
+        zshlog --info -v=$GIT_UTILS_DEBUG "🛠️  Generating ${(q)outfile} with standard ignores..."
 
         # Collect unique ignores from current directory that match defaults
         local -a found_ignores=()
         for dir in "$target"/*/; do
             dir="${dir%/}"
             name="$(basename "$dir")"
-            for ignore in "${default_ignores[@]}"; do
+            # for ignore in "${default_ignores[@]}"; do
+            for ignore in "${GSUBIGNORE_DEFAULTS[@]}"; do
                 [[ "$name" == "$ignore" ]] && found_ignores+=("$name/")
             done
         done
@@ -1104,7 +1196,7 @@ gsub-genignore() {
         echo "${udirs}" >> "$outfile"
     else
 
-        zshlog --info -v "🛠️  Deduplicating existing ${(q)outfile}..."
+        zshlog --info -v=$GIT_UTILS_DEBUG "🛠️  Deduplicating existing ${(q)outfile}..."
 
         # Deduplicate existing file (preserve comments and structure)
         local tempfile="${outfile}.tmp"
@@ -1133,14 +1225,15 @@ gsub-genignore() {
     fi
 
     # Show the file contents
-    [[ $regenerate -eq 1 ]] && zshlog --info -v "✅ Created ${(q)outfile} with standard ignores.\n" || zshlog --info -v "✅ Deduplicated ${(q)outfile}.\n"
+    [[ $regenerate -eq 1 ]] && zshlog --info -v=$GIT_UTILS_DEBUG "✅ Created ${(q)outfile} with standard ignores.\n" || zshlog --info -v=$GIT_UTILS_DEBUG "✅ Deduplicated ${(q)outfile}.\n"
 
     echo "📂 Ignored folders:(Not SubModule candidates)"
     \cat "$(realpath "$outfile")"
 
     # Showing non-ignored folders:
     echo "\n📂 Possible SubModule candidates:(Non-ignored folders)"
-    local ignore_list=("${default_ignores[@]}")
+    # local ignore_list=("${default_ignores[@]}")
+    local ignore_list=("${GSUBIGNORE_DEFAULTS[@]}")
     [[ -f "$outfile" ]] && while IFS= read -r line; do
         [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
         ignore_list+=("${line%/}")
@@ -1172,147 +1265,498 @@ gsub-genignore() {
 
 }
 
+# 🔧 gsubignore: Flexibly add/remove folders from .gsubignore user section
+# Usage: gsubignore [options] [folder1] [folder2] [-folder3] ...
+#   Add folders:     gsubignore logs plugins tmp
+#   Remove folders:  gsubignore -logs -plugins (or --remove logs plugins)
+#   Wildcards:       gsubignore old* *cache* test-*
+#   Mixed:           gsubignore newfolder -oldfolder
+#   List entries:    gsubignore -l or --list
+#   Clear user:      gsubignore --clear-user
+#   Target dir:      gsubignore -d ~/project folder1 folder2
+gsubignore() {
+    local usage="
+    📁 gsubignore - Manage .gsubignore user entries
+
+    Usage: gsubignore [options] [±folder ...]
+
+    Arguments:
+    folder        Add folder to ignore list
+    -folder       Remove folder from ignore list (prefix with -)
+    pattern*      Wildcard patterns supported (matches existing dirs)
+
+    Options:
+    -d, --dir DIR     Target directory (default: current)
+    -l, --list        List current user-added entries
+    -a, --all         List all entries (including auto-generated)
+    -c, --clear-user  Clear all user-added entries
+    -r, --remove      Remove mode: treat all following args as removals
+    -v, --verbose     Verbose output
+    -h, --help        Show this help
+
+    Examples:
+    gsubignore logs plugins cache     # Add multiple folders
+    gsubignore -logs -cache           # Remove folders (- prefix)
+    gsubignore --remove logs cache    # Remove folders (--remove flag)
+    gsubignore old* *backup*          # Add matching folders via wildcard
+    gsubignore -d ~/code tmp          # Add 'tmp' in ~/code/.gsubignore
+    gsubignore newfolder -oldfolder   # Add and remove in one command
+    gsubignore -l                     # List user-added entries
+    gsubignore --clear-user           # Clear user section
+
+    Note: Requires .gsubignore to exist. Run 'gsub-genignore' first to create it.
+    "
+
+    # Options
+    local target="."
+    local list_mode=0
+    local list_all=0
+    local clear_user=0
+    local remove_mode=0
+    local verbose=0
+    local -a to_add=()
+    local -a to_remove=()
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)          echo "$usage"; return 0 ;;
+            -d|--dir)           [[ -z "$2" || "$2" == -* ]] && { echo "❌ --dir requires a directory argument"; return 1; }
+                                target="$2";        shift 2 ;;
+            --dir=*)            target="${1#*=}";   shift ;;
+            -l|--list)          list_mode=1;        shift ;;
+            -a|--all)           list_all=1;         shift ;;
+            -c|--clear-user)    clear_user=1;       shift ;;
+            -r|--remove)        remove_mode=1;      shift ;;
+            -v|--verbose)       verbose=1;          shift ;;
+            --*)                to_remove+=("${1#--}"); shift ;;  # Long option removal: --foldername (treat as remove)
+            -*)
+                # Could be short flag combo or removal
+                # Check if it's a known short flag
+                if [[ "$1" =~ ^-[dlacrvh]+$ ]]; then
+                    # Parse combined short flags
+                    local flags="${1#-}"
+                    for (( i=0; i<${#flags}; i++ )); do
+                        case "${flags:$i:1}" in
+                            d)
+                                [[ -z "$2" || "$2" == -* ]] && { echo "❌ -d requires a directory argument"; return 1; }
+                                target="$2";        shift ;;
+                            l) list_mode=1 ;;
+                            a) list_all=1 ;;
+                            c) clear_user=1 ;;
+                            r) remove_mode=1 ;;
+                            v) verbose=1 ;;
+                            h) echo "$usage";       return 0 ;;
+                        esac
+                    done
+                    shift
+                else
+                    # Treat as removal: -foldername
+                    to_remove+=("${1#-}")
+                    shift
+                fi
+                ;;
+            *)
+                # Regular argument
+                if [[ $remove_mode -eq 1 ]]; then
+                    to_remove+=("$1")
+                else
+                    to_add+=("$1")
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    local outfile="$target/.gsubignore"
+    local user_marker="# === === === === User added folders below: === === === ==="
+
+    __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
+
+    # Validate target directory
+    [[ ! -d "$target" ]] && { zshlog --error -v=$GIT_UTILS_DEBUG "❌ Directory not found: $target"; return 1; }
+
+    # Check if .gsubignore exists - DO NOT create it
+    if [[ ! -f "$outfile" ]]; then
+        zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  .gsubignore not found in ${target/#$HOME/~}"
+        echo "❌ No .gsubignore file found in ${target/#$HOME/~}"
+        echo "💡 Run 'gsub-genignore ${target/#$HOME/~}' first to create it."
+        return 1
+    fi
+
+    # Check if user section exists
+    if ! grep -q "User added folders" "$outfile"; then
+        zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  User section not found in .gsubignore"
+        echo "⚠️  .gsubignore exists but has no user section marker."
+        echo "💡 Add this line to your .gsubignore:"
+        echo "   # === === === === User added folders below: === === === ==="
+        return 1
+    fi
+
+    # LIST MODE: Show entries
+    if [[ $list_mode -eq 1 || $list_all -eq 1 ]]; then
+        if [[ $list_all -eq 1 ]]; then
+            echo "📂 All entries in ${outfile/#$HOME/~}:"
+            grep -Ev '^\s*$' "$outfile" | while read -r line; do
+                [[ "$line" =~ ^#.*$ ]] && echo "  \e[90m$line\e[0m" || echo "  \e[36m$line\e[0m"
+            done
+        else
+            echo "📂 User-added entries in ${outfile/#$HOME/~}:"
+            local in_user_section=0
+            local count=0
+            while IFS= read -r line; do
+                [[ "$line" == *"User added folders"* ]] && { in_user_section=1; continue; }
+                if [[ $in_user_section -eq 1 && -n "$line" && ! "$line" =~ ^#.*$ ]]; then
+                    echo "  \e[36m${line%/}\e[0m"
+                    ((count++))
+                fi
+            done < "$outfile"
+            [[ $count -eq 0 ]] && echo "  (none)"
+        fi
+        return 0
+    fi
+
+    # CLEAR USER MODE: Remove all user entries
+    if [[ $clear_user -eq 1 ]]; then
+        zshlog --warn -v=$GIT_UTILS_DEBUG "⚠️  Clearing user-added entries..."
+        local tempfile="${outfile}.tmp"
+        local in_user_section=0
+
+        while IFS= read -r line; do
+            if [[ "$line" == *"User added folders"* ]]; then
+                echo "$line" >> "$tempfile"
+                in_user_section=1
+                continue
+            fi
+            [[ $in_user_section -eq 0 ]] && echo "$line" >> "$tempfile"
+        done < "$outfile"
+
+        mv "$tempfile" "$outfile"
+        echo "✅ User section cleared"
+        echo ""
+        echo "📄 Current .gsubignore user entries:"
+        echo "   (none)"
+        echo ""
+        return 0
+    fi
+
+    # No folders specified?
+    if [[ ${#to_add[@]} -eq 0 && ${#to_remove[@]} -eq 0 ]]; then
+        echo "$usage"
+        return 1
+    fi
+
+    # Enable globbing for wildcard expansion
+    setopt local_options null_glob glob_dots
+
+    # =========================================================================
+    # VALIDATE INPUT PARAMETERS
+    # =========================================================================
+    local -a validated_add=()
+    local -a skipped_not_dir=()
+    local -a skipped_not_found=()
+
+    for item in "${to_add[@]}"; do
+        if [[ "$item" == *[\*\?\[]* ]]; then
+            # Wildcard - will be expanded later, add as-is for now
+            validated_add+=("$item")
+        else
+            # Literal name - validate it's a directory
+            local item_path="$target/${item%/}"
+            if [[ -d "$item_path" ]]; then
+                validated_add+=("${item%/}")
+            elif [[ -e "$item_path" ]]; then
+                skipped_not_dir+=("${item%/}")
+            else
+                skipped_not_found+=("${item%/}")
+            fi
+        fi
+    done
+
+    # Report validation results immediately
+    if [[ ${#skipped_not_dir[@]} -gt 0 ]]; then
+        echo "\e[90m⏭️  Skipped (not a directory): ${skipped_not_dir[*]}\e[0m"
+    fi
+    if [[ ${#skipped_not_found[@]} -gt 0 ]]; then
+        echo "\e[90m⏭️  Skipped (not found): ${skipped_not_found[*]}\e[0m"
+    fi
+
+    # Replace to_add with validated items
+    to_add=("${validated_add[@]}")
+
+    # Expand wildcards for additions - DIRECTORIES ONLY
+    # (Literal names already validated above)
+    local -a expanded_add=()
+    for pattern in "${to_add[@]}"; do
+        if [[ "$pattern" == *[\*\?\[]* ]]; then
+            # Wildcard pattern - expand against existing DIRECTORIES only
+            # Use (N/) glob qualifier: N=nullglob, /=directories only
+            local -a matches=()
+            eval "matches=(\"\$target\"/$~pattern(N/))"
+            if [[ ${#matches[@]} -gt 0 ]]; then
+                for match in "${matches[@]}"; do
+                    expanded_add+=("$(basename "$match")")
+                done
+                [[ $verbose -eq 1 ]] && echo "🔍 Pattern '$pattern' matched dirs: ${matches[*]##*/}"
+            else
+                echo "\e[90m⚠️  Pattern '$pattern' matched no directories\e[0m"
+            fi
+        else
+            # Already validated as existing directory - just add
+            expanded_add+=("${pattern%/}")
+        fi
+    done
+
+    # Expand wildcards for removals
+    local -a expanded_remove=()
+    local -a remove_patterns=()  # Store wildcard patterns for direct matching
+    for pattern in "${to_remove[@]}"; do
+        if [[ "$pattern" == *[\*\?\[]* ]]; then
+            # Store wildcard pattern for later matching during removal
+            remove_patterns+=("$pattern")
+            # Also try to expand against existing entries in file
+            local pattern_matched=0
+            while IFS= read -r line; do
+                [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+                local entry="${line%/}"
+                # Use case for reliable glob pattern matching
+                case "$entry" in
+                    $~pattern)
+                        expanded_remove+=("$entry")
+                        pattern_matched=1
+                        ;;
+                esac
+            done < "$outfile"
+            [[ $verbose -eq 1 && $pattern_matched -eq 1 ]] && echo "🔍 Remove pattern '$pattern' matched entries"
+            [[ $verbose -eq 1 && $pattern_matched -eq 0 ]] && echo "⚠️  Remove pattern '$pattern' matched no entries"
+        else
+            expanded_remove+=("${pattern%/}")
+        fi
+    done
+
+    # Track changes for display
+    local -a added_entries=()
+    local -a removed_entries=()
+
+    # REMOVE entries
+    if [[ ${#expanded_remove[@]} -gt 0 || ${#remove_patterns[@]} -gt 0 ]]; then
+        local tempfile="${outfile}.tmp"
+
+        # Read all existing entries first to check what exists
+        local -a existing_entries=()
+        while IFS= read -r line; do
+            [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+            existing_entries+=("${line%/}")
+        done < "$outfile"
+
+        # Check which requested removals don't exist
+        local -a not_found_removals=()
+        for rem in "${expanded_remove[@]}"; do
+            local found=0
+            for existing in "${existing_entries[@]}"; do
+                [[ "$existing" == "$rem" || "$existing" == "${rem}/" ]] && { found=1; break; }
+            done
+            [[ $found -eq 0 ]] && not_found_removals+=("$rem")
+        done
+
+        # Now process the file
+        while IFS= read -r line; do
+            local entry="${line%/}"
+            local should_remove=0
+
+            # Check against explicit entries
+            for rem in "${expanded_remove[@]}"; do
+                [[ "$entry" == "$rem" || "$entry" == "${rem}/" ]] && { should_remove=1; break; }
+            done
+
+            # Check against wildcard patterns (for entries that might have been missed)
+            if [[ $should_remove -eq 0 ]]; then
+                for pat in "${remove_patterns[@]}"; do
+                    case "$entry" in
+                        $~pat) should_remove=1; break ;;
+                    esac
+                done
+            fi
+
+            if [[ $should_remove -eq 1 && ! "$line" =~ ^#.*$ && -n "$line" ]]; then
+                removed_entries+=("$entry")
+            else
+                echo "$line" >> "$tempfile"
+            fi
+        done < "$outfile"
+
+        mv "$tempfile" "$outfile"
+
+        if [[ ${#removed_entries[@]} -gt 0 ]]; then
+            echo "🗑️  Removed: ${removed_entries[*]}"
+        fi
+
+        # Report entries not found
+        if [[ ${#not_found_removals[@]} -gt 0 ]]; then
+            echo "\e[90m⚠️  Not found (skipped): ${not_found_removals[*]}\e[0m"
+        fi
+
+        # If nothing was removed and nothing was not-found, show generic message
+        if [[ ${#removed_entries[@]} -eq 0 && ${#not_found_removals[@]} -eq 0 && ${#remove_patterns[@]} -gt 0 ]]; then
+            echo "\e[90m⚠️  No matching entries found for pattern(s)\e[0m"
+        fi
+    fi
+
+    # ADD entries to user section
+    if [[ ${#expanded_add[@]} -gt 0 ]]; then
+        # Read existing entries to avoid duplicates
+        local -a existing=()
+        while IFS= read -r line; do
+            [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+            existing+=("${line%/}")
+        done < "$outfile"
+
+        local -a skipped_existing=()
+
+        for folder in "${expanded_add[@]}"; do
+            folder="${folder%/}"
+
+            # Check if already exists
+            if [[ " ${existing[*]} " =~ " ${folder} " ]]; then
+                skipped_existing+=("$folder")
+                continue
+            fi
+
+            # Append to file (will be sorted later)
+            echo "${folder}/" >> "$outfile"
+            added_entries+=("$folder")
+        done
+
+        if [[ ${#added_entries[@]} -gt 0 ]]; then
+            echo "✅ Added: ${added_entries[*]}"
+        fi
+
+        # Show skipped folders in dim color
+        if [[ ${#skipped_existing[@]} -gt 0 ]]; then
+            echo "\e[90m⏭️  Skipped (already exist): ${skipped_existing[*]}\e[0m"
+        fi
+    fi
+
+    # Deduplicate and SORT user section
+    local tempfile="${outfile}.tmp"
+    local -a seen=()
+    local -a user_entries=()
+    local in_user_section=0
+
+    # First pass: collect and separate content
+    while IFS= read -r line; do
+        if [[ "$line" == *"User added folders"* ]]; then
+            echo "$line" >> "$tempfile"
+            in_user_section=1
+            continue
+        fi
+
+        if [[ $in_user_section -eq 0 ]]; then
+            # Before user section - keep as is (deduplicate)
+            if [[ "$line" =~ ^#.*$ || -z "$line" ]]; then
+                echo "$line" >> "$tempfile"
+            else
+                local normalized="${line%/}"
+                if [[ ! " ${seen[*]} " =~ " ${normalized} " ]]; then
+                    seen+=("$normalized")
+                    echo "$line" >> "$tempfile"
+                fi
+            fi
+        else
+            # In user section - collect for sorting
+            if [[ -n "$line" && ! "$line" =~ ^#.*$ ]]; then
+                local normalized="${line%/}"
+                if [[ ! " ${seen[*]} " =~ " ${normalized} " ]]; then
+                    seen+=("$normalized")
+                    user_entries+=("$normalized")
+                fi
+            fi
+        fi
+    done < "$outfile"
+
+    # Sort and write user entries
+    if [[ ${#user_entries[@]} -gt 0 ]]; then
+        printf '%s\n' "${user_entries[@]}" | sort | while read -r entry; do
+            echo "${entry}/" >> "$tempfile"
+        done
+    fi
+
+    mv "$tempfile" "$outfile"
+
+    # Always show current state after modifications
+    echo ""
+    echo "📄 Current .gsubignore user entries:"
+    in_user_section=0
+    local entry_count=0
+    while IFS= read -r line; do
+        [[ "$line" == *"User added folders"* ]] && { in_user_section=1; continue; }
+        if [[ $in_user_section -eq 1 && -n "$line" && ! "$line" =~ ^#.*$ ]]; then
+            local entry="${line%/}"
+            # Highlight newly added entries in green
+            if [[ " ${added_entries[*]} " =~ " ${entry} " ]]; then
+                echo "   \e[32m${entry} ← new\e[0m"
+            else
+                echo "   ${entry}"
+            fi
+            ((entry_count++))
+        fi
+    done < "$outfile"
+    [[ $entry_count -eq 0 ]] && echo "   (none)"
+
+    # Show removed entries (strikethrough effect in dim)
+    if [[ ${#removed_entries[@]} -gt 0 ]]; then
+        echo ""
+        echo "\e[90m   Removed:\e[0m"
+        for entry in "${removed_entries[@]}"; do
+            echo "   \e[9;31m${entry}\e[0m"
+        done
+    fi
+    echo ""
+}
+
 # 🔧 git-genignore: Generate .gitignore for any git repository
 git-genignore() {
     local target="${1:-$PWD}"
     local outfile="$target/.gitignore"
-    local default_ignores=(
-        "# User directories at user level"
-        "Documents/"
-        "Downloads/"
-        "Applications/"
-        "Music/"
-        "Movies/"
-        "Pictures/"
-        "Library/"
-        "raycast/"
-        ".git/"
-        "plugins/"
-        "logs/"
-        ".zsh_*/"
-        ".zcomp*/"
-        "save/"
-        "old*/"
-        ".claude/"
-        "claude/"
-        "cat"
-        "glab-cli/"
-        "gh/"
-        ""
-        "# OS generated files"
-        ".DS_Store"
-        ".DS_Store?"
-        "._*"
-        ".Spotlight-V100"
-        ".Trashes"
-        "ehthumbs.db"
-        "Thumbs.db"
-        ""
-        "# Backups and Archives"
-        "*.bak"
-        "*.zip"
-        "*.backup"
-        "*.arc"
-        "*.archive"
-        "*.old"
-        "*.save"
-        ".*.bak"
-        ".*.old"
-        ".*.backup"
-        ".*.arc"
-        ".*.archive"
-        ".*.save"
-        "backup/"
-        "archive/"
-        "backups/"
-        "archives/"
-        "old*"
-        "old.*"
-        "old-*"
-        "save/"
-        ""
-        "# Editor directories and files"
-        ".idea/"
-        ".vscode/"
-        "*.swp"
-        "*.swo"
-        "*~"
-        ""
-        "# Logs and databases"
-        "*.log"
-        "logs/"
-        "*.sql"
-        "*.sqlite"
-        ""
-        "# Dependencies and build artifacts"
-        "node_modules/"
-        "dist/"
-        "build/"
-        "*.pyc"
-        "__pycache__/"
-        ".venv/"
-        "venv/"
-        "env/"
-        ""
-        "# Temporary files"
-        "*.tmp"
-        "tmp/"
-        "temp/"
-        "cache/"
-        ".cache/"
-        ""
-        "# Security and secrets"
-        "*.env"
-        ".env"
-        ".env.*"
-        "*.key"
-        "*.pem"
-        "secrets/"
-        "credentials/"
-        ""
-        "# Custom ignores below"
-        ".claude/"
-        "claude/"
-        "glab-cli/"
-        "CLAUDE.md"
-    )
+    (( ${+GITIGNORE_DEFAULTS} )) || return 1
 
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
 
     # Check if directory is a git repo
     if ! git -C "$target" rev-parse --is-inside-work-tree &>/dev/null; then
-        zshlog --error "❌ Not a git repository: ${target/#$HOME/~}"
+        zshlog --error -v=$GIT_UTILS_DEBUG "❌ Not a git repository: ${target/#$HOME/~}"
         return 1
     fi
 
-    zshlog --info "🛠️  Generating .gitignore in ${target/#$HOME/~}..."
+    zshlog --info -v=$GIT_UTILS_DEBUG "🛠️  Generating .gitignore in ${target/#$HOME/~}..."
 
-    # Check if file exists and prompt for overwrite
+    # Check if file exists and prompt to overwrite
     local regenerate=1
     if [[ -e "$outfile" ]]; then
         read -r "?⚠️  $outfile already exists. Overwrite? [y/N] " reply
         if [[ ! "$reply" =~ ^[Yy]$ ]]; then
-            zshlog --warn -v " 🚫 Skipped regeneration."
+            zshlog --warn -v=$GIT_UTILS_DEBUG " 🚫 Skipped regeneration."
             return 0
         else
             local backup_file
             backup_file=$(_backup "$outfile")
-            zshlog --info -v "💾 Backup created at <${backup_file}>"
+            zshlog --info -v=$GIT_UTILS_DEBUG "💾 Backup created at <${backup_file}>"
         fi
     fi
 
-    zshlog --info -v "🛠️  Generating <${outfile}> with standard ignore patterns..."
+    zshlog --info -v=$GIT_UTILS_DEBUG "🛠️  Generating <${outfile}> with standard ignore patterns..."
 
     # Generate file
     echo "# .gitignore - Generated by git-genignore" > "$outfile"
     echo "# Add custom patterns below the default sections" >> "$outfile"
     echo "" >> "$outfile"
 
-    for line in "${default_ignores[@]}"; do
+    # for line in "${default_ignores[@]}"; do
+    for line in "${GITIGNORE_DEFAULTS[@]}"; do
         echo "$line" >> "$outfile"
     done
 
-    zshlog --info -v "✅ Standard ignore patterns added."
+    zshlog --info -v=$GIT_UTILS_DEBUG "✅ Standard ignore patterns added."
 
     echo "" >> "$outfile"
     echo "# === === === === Custom ignores below: === === === ===" >> "$outfile"
@@ -1324,6 +1768,9 @@ git-genignore() {
 
 }
 
+# Used mainly by git-genignore
+# Usage: _backup <target-filename>
+# Returns: backup file name
 _backup() {
     local target="$1"
     local timestamp=$(date '+%Y%m%d-%H%M%S')
