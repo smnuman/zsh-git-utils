@@ -1096,12 +1096,10 @@ _gsync-push() {
 
 # ⚙️ _gsync-pull: Pull latest for both submodule and parent
 _gsync-pull() {
-
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
-
     zshlog --info -v=$GIT_UTILS_DEBUG "📥 Pulling submodule..." && git pull --rebase &&
+    zshlog --info -v=$GIT_UTILS_DEBUG "🔗 Reattaching submodules after pull..." && gsub-reattach &&
     zshlog --info -v=$GIT_UTILS_DEBUG "📤 Pulling parent repo..." && ( cd .. && git pull --rebase )
-
 }
 
 # ⚙️ gsync: Full fetch + push
@@ -1138,6 +1136,79 @@ gsync-all() {
     zshlog --info -v=$GIT_UTILS_DEBUG "🔼 Syncing parent repo..."
     _gparent "$msg"
 
+}
+
+
+# 🔄 gsub-reattach: Reattach detached submodules to their tracked branch
+# After `git submodule update`, submodules are left in detached HEAD state.
+# This function checks each submodule and reattaches it to the branch configured
+# in .gitmodules (or defaults to 'main') if HEAD matches the branch tip.
+# Usage: gsub-reattach [dir=.]
+# Example: gsub-reattach ~/.config
+gsub-reattach() {
+    [[ "$1" == (-h|--help) ]] && {
+        echo "\n🔄 Usage: gsub-reattach [dir=.]\n"
+        echo "Reattaches detached submodules to their tracked branch."
+        echo "Checks .gitmodules for configured branch (defaults to main)."
+        echo "Only reattaches if HEAD matches the branch tip (safe operation).\n"
+        echo "Examples:"
+        echo "  gsub-reattach              # Reattach submodules in current dir"
+        echo "  gsub-reattach ~/.config    # Reattach submodules in specific dir\n"
+        return 0
+    }
+
+    local dir="${1:-$PWD}"
+
+    (
+        cd "$dir" || return 1
+
+        __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
+
+        # Check if this is a git repo with submodules
+        ! git rev-parse --is-inside-work-tree &>/dev/null && {
+            zshlog --error -v=$GIT_UTILS_DEBUG "❌ Not a git repo: ${dir/#$HOME/~}"
+            return 1
+        }
+        [[ ! -f .gitmodules ]] && {
+            zshlog --info -v=$GIT_UTILS_DEBUG "No .gitmodules found — nothing to reattach"
+            return 0
+        }
+
+        zshlog --info -v=$GIT_UTILS_DEBUG "🔄 Reattaching detached submodules in ${dir/#$HOME/~}..."
+
+        git submodule foreach --recursive --quiet '
+            # Determine the configured branch for this submodule
+            branch=$(git config -f "$toplevel/.gitmodules" submodule."$name".branch 2>/dev/null)
+            branch="${branch:-main}"
+
+            # Check if currently on a branch or detached
+            current=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+
+            if [ -n "$current" ]; then
+                # Already on a branch
+                exit 0
+            fi
+
+            # Detached HEAD — check if it matches the branch tip
+            head_commit=$(git rev-parse HEAD 2>/dev/null)
+            branch_commit=$(git rev-parse "origin/$branch" 2>/dev/null || git rev-parse "$branch" 2>/dev/null || echo "")
+
+            if [ -z "$branch_commit" ]; then
+                echo "⚠ $name: cannot resolve branch '\''$branch'\'' — skipping"
+                exit 0
+            fi
+
+            if [ "$head_commit" = "$branch_commit" ]; then
+                git checkout "$branch" 2>/dev/null && echo "✓ $name → $branch" || echo "✗ $name: checkout failed"
+            else
+                short_head=$(git rev-parse --short HEAD)
+                short_branch=$(git rev-parse --short "origin/$branch" 2>/dev/null || git rev-parse --short "$branch" 2>/dev/null)
+                echo "⚠ $name: detached at $short_head, diverges from $branch ($short_branch) — skipping"
+            fi
+        '
+
+        zshlog --info -v=$GIT_UTILS_DEBUG "✅ gsub-reattach complete"
+    )
 }
 
 gsub-genignore() {
