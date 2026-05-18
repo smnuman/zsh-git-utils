@@ -107,8 +107,7 @@ git-aliases() {
   done
 }
 
-source "${GUTILS}/git-ai-remotes"
-
+[[ -f "$GUTILS/git-ai-remotes" ]] && source "${GUTILS}/git-ai-remotes" || zshlog --error -v=$GIT_UTILS_DEBUG "Failed to load git-ai-remotes"
 
 # 🏷️  Generate standardized repository name from directory or custom input
 # Usage: _grepo_name [dir] [custom_name]
