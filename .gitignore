@@ -1,12 +1,12 @@
-.DS_Store
-*.log
-*.tmp
-*.bak
-*.backup
-*.arc
-*.archive
-git_users.zsh
-old-files/
-README_*.md
-run-once-*.zsh
-.venv/
+/*
+!/.g*
+!/git-*
+!/gitignore-defaults.zsh
+!/ignores
+!/lsg
+!/old-files/
+!/old-files/**
+!/README.md
+
+*.bak *.backup *.pre-bootstrap *-bak *.arc *.archive
+*~ *.swp *.swo *.tmp *.log .DS_Store
