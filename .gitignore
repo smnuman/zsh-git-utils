@@ -1,11 +1,12 @@
 /*
+
 !/.g*
 !/git-*
+!/docs/**
 !/gitignore-defaults.zsh
+!/gw.zsh
 !/ignores
 !/lsg
-!/old-files/
-!/old-files/**
 !/README.md
 
 *.bak *.backup *.pre-bootstrap *-bak *.arc *.archive
