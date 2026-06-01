@@ -1096,9 +1096,9 @@ _gsync-push() {
 # ⚙️ _gsync-pull: Pull latest for both submodule and parent
 _gsync-pull() {
     __glog_scope_start; trap '__glog_scope_end '"${funcstack[1]}" EXIT
-    zshlog --info -v=$GIT_UTILS_DEBUG "📥 Pulling submodule..." && git pull --rebase &&
-    zshlog --info -v=$GIT_UTILS_DEBUG "🔗 Reattaching submodules after pull..." && gsub-reattach &&
-    zshlog --info -v=$GIT_UTILS_DEBUG "📤 Pulling parent repo..." && ( cd .. && git pull --rebase )
+    zshlog --info ${GIT_UTILS_DEBUG:+-v} "📥 Pulling submodule..." && git pull --rebase &&
+    zshlog --info ${GIT_UTILS_DEBUG:+-v} "🔗 Reattaching submodules after pull..." && gsub-reattach &&
+    zshlog --info ${GIT_UTILS_DEBUG:+-v} "📤 Pulling parent repo..." && ( cd .. && git pull --rebase )
 }
 
 # ⚙️ gsync: Full fetch + push
@@ -1206,7 +1206,7 @@ gsub-reattach() {
             fi
         '
 
-        zshlog --info -v=$GIT_UTILS_DEBUG "✅ gsub-reattach complete"
+        zshlog --info ${GIT_UTILS_DEBUG:+-v} "✅ gsub-reattach complete"
     )
 }
 
