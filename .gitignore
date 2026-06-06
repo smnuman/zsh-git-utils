@@ -10,3 +10,6 @@
 
 *.bak *.backup *.pre-bootstrap *-bak *.arc *.archive
 *~ *.swp *.swo *.tmp *.log .DS_Store
+
+# oh-my-claudecode runtime state (agent replays, HUD cache, session tracking)
+.omc/
